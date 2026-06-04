@@ -718,3 +718,5 @@ httpServer.listen(port, () => {
   console.log(`🏥 Health Check: http://localhost:${port}/api/v1/health`);
   console.log(`===========================================`);
 });
+
+export default app;

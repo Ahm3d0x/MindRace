@@ -50,6 +50,21 @@ app.use(
 
 app.use(express.json());
 
+// Root welcome route
+app.get('/', (req, res) => {
+  res.json({
+    status: 'online',
+    message: 'Welcome to the Mind Race API Gateway',
+    endpoints: {
+      health: '/api/v1/health',
+      me: '/api/v1/users/me',
+      questions: '/api/v1/questions',
+      rooms: '/api/v1/rooms'
+    },
+    version: '1.0.0'
+  });
+});
+
 // Base health check route
 app.get('/api/v1/health', (req, res) => {
   res.json({

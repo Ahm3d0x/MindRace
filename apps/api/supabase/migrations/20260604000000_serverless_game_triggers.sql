@@ -226,3 +226,57 @@ SELECT
 FROM auth.users
 ON CONFLICT (id) DO NOTHING;
 
+
+-- ============================================================
+-- 5. Safe Realtime Replication Configuration
+-- ============================================================
+do $$
+begin
+  -- Check if publication exists, if not create it
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+end $$;
+
+do $$
+declare
+  t text;
+  tables_to_add text[] := array['rooms', 'room_participants', 'matches', 'match_rounds', 'round_answers'];
+begin
+  foreach t in array tables_to_add loop
+    if not exists (
+      select 1 from pg_publication_tables 
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table %I', t);
+    end if;
+  end loop;
+end $$;
+
+
+-- ============================================================
+-- 6. Seed Sample Questions (10 Interactive Questions)
+-- ============================================================
+INSERT INTO public.questions (type, category, body, image_url, options, correct_answer, ordering_items, matching_pairs, coding_test_cases, difficulty, rating, rating_count, explanation) VALUES
+('MULTIPLE_CHOICE', 'Science / العلوم', 'Which element has the highest thermal conductivity of any natural material?\nأي العناصر التالية يمتلك أعلى موصلية حرارية بين المواد الطبيعية؟', NULL, '[{"id": "a", "text": "Silver / الفضة"}, {"id": "b", "text": "Copper / النحاس"}, {"id": "c", "text": "Diamond / الماس"}, {"id": "d", "text": "Gold / الذهب"}]'::jsonb, '"c"'::jsonb, NULL, NULL, NULL, 'Medium', 4.80, 1, 'Diamond has a thermal conductivity five times higher than copper.\nالماس يمتلك موصلية حرارية تفوق النحاس بخمسة أضعاف.'),
+
+('TRUE_FALSE', 'Physics / الفيزياء', 'Sound waves travel faster in water than in air.\nتنتقل الموجات الصوتية في الماء بسرعة أكبر من انتقالها في الهواء.', NULL, NULL, '"true"'::jsonb, NULL, NULL, NULL, 'Easy', 4.50, 1, 'Because water is denser than air, sound travels about 4.3 times faster in it.\nلأن الماء أكثر كثافة من الهواء، ينتقل الصوت فيه بسرعة أكبر بنحو 4.3 أضعاف.'),
+
+('FILL_IN_THE_BLANK', 'Math / الرياضيات', 'What is the value of Pi rounded to two decimal places?\nما هي قيمة ثابت بّاي (Pi) مقربة لعددين عشريين؟', NULL, NULL, '"3.14"'::jsonb, NULL, NULL, NULL, 'Easy', 4.20, 1, 'Pi is approximately 3.14159..., which rounds to 3.14.\nثابت باي هو تقريباً 3.14159... والذي يقرب إلى 3.14.'),
+
+('ORDERING_QUESTION', 'Astronomy / الفلك', 'Order these planets from closest to farthest from the Sun.\nرتب الكواكب التالية من الأقرب إلى الأبعد عن الشمس.', NULL, '[{"id": "1", "text": "Venus / الزهرة"}, {"id": "2", "text": "Mercury / عطارد"}, {"id": "3", "text": "Mars / المريخ"}, {"id": "4", "text": "Earth / الأرض"}]'::jsonb, NULL, '["2", "1", "4", "3"]'::jsonb, NULL, NULL, 'Medium', 4.60, 1, 'Mercury is closest, followed by Venus, Earth, and Mars.\nعطارد هو الأقرب، يليه الزهرة، ثم الأرض، وأخيراً المريخ.'),
+
+('MATCHING_QUESTION', 'Technology / التقنية', 'Match the programming terms with their definitions.\nصل المصطلحات البرمجية بالتعريفات المناسبة لها.', NULL, NULL, NULL, NULL, '[{"leftId": "v", "leftText": "Variable / المتغير", "rightId": "1", "rightText": "Stores data / يخزن البيانات"}, {"leftId": "f", "leftText": "Function / الدالة", "rightId": "2", "rightText": "Reusable block / كتلة برمجية يعاد استخدامها"}, {"leftId": "l", "leftText": "Loop / التكرار", "rightId": "3", "rightText": "Repeats instructions / يكرر التعليمات البرمجية"}]'::jsonb, NULL, 'Medium', 4.70, 1, 'Variables store data, functions are reusable blocks, and loops repeat instructions.\nالمتغيرات تخزن البيانات، الدوال كتل يعاد استخدامها، والتكرار يكرر الأوامر.'),
+
+('MULTI_SELECT', 'Math / الرياضيات', 'Select all of the following numbers that are prime.\nاختر جميع الأعداد الأولية من القائمة التالية.', NULL, '[{"id": "a", "text": "2"}, {"id": "b", "text": "3"}, {"id": "c", "text": "9"}, {"id": "d", "text": "11"}]'::jsonb, '["a", "b", "d"]'::jsonb, NULL, NULL, NULL, 'Medium', 4.40, 1, '2, 3, and 11 have no divisors other than 1 and themselves. 9 is divisible by 3.\nالأعداد 2 و 3 و 11 لا تقبل القسمة إلا على نفسها وعلى 1. العدد 9 يقبل القسمة على 3.'),
+
+('CALCULATION_QUESTION', 'Electronics / إلكترونيات', 'Calculate the current (in Amperes) flowing in a circuit with a 12V voltage source and a 4 Ohm resistor.\nاحسب شدة التيار (بالأمبير) المار في دائرة كهربائية بها مصدر جهد 12 فولت ومقاومة 4 أوم.', NULL, NULL, '"3"'::jsonb, NULL, NULL, NULL, 'Easy', 4.30, 1, 'Using Ohm''s law (I = V / R), Current = 12V / 4 Ohms = 3 Amperes.\nباستخدام قانون أوم (ت = جـ / م)، التيار = 12 / 4 = 3 أمبير.'),
+
+('CIRCUIT_QUESTION', 'Electronics / إلكترونيات', 'What is the equivalent resistance of two 10 Ohm resistors connected in parallel?\nما هي المقاومة المكافئة لمقاومتين قيمة كل منهما 10 أوم متصلتين على التوازي؟', NULL, '[{"id": "a", "text": "20 Ohms / أوم"}, {"id": "b", "text": "5 Ohms / أوم"}, {"id": "c", "text": "10 Ohms / أوم"}]'::jsonb, '"b"'::jsonb, NULL, NULL, NULL, 'Medium', 4.50, 1, 'For parallel resistors: R_eq = (R1 * R2) / (R1 + R2) = 100 / 20 = 5 Ohms.\nللمقاومات على التوازي: م المكافئة = (م1 * م2) / (م1 + م2) = 100 / 20 = 5 أوم.'),
+
+('IMAGE_QUESTION', 'Chemistry / الكيمياء', 'Identify the chemical compound represented by this hexagonal ring structure.\nتعرف على المركب الكيميائي الممثل بحلقة السداسي العطري الموضحة.', 'https://images.unsplash.com/photo-1603126857599-f6e157fa2fe6?auto=format&fit=crop&w=500&q=80', '[{"id": "a", "text": "Cyclohexane / سيكلوهكسان"}, {"id": "b", "text": "Benzene / بنزين"}, {"id": "c", "text": "Toluene / تولوين"}]'::jsonb, '"b"'::jsonb, NULL, NULL, NULL, 'Medium', 4.80, 1, 'Benzene (C6H6) is represented by a hexagonal ring with a circle or alternating double bonds.\nالبنزين العطري (C6H6) يمثل بحلقة سداسية تحتوي على روابط ثنائية متبادلة.'),
+
+('CODING_QUESTION', 'Programming / البرمجة', 'Write a JavaScript function sum(a, b) that returns the sum of both parameters.\nاكتب دالة برمجية بلغة جافا سكربت sum(a, b) تقوم بإعادة مجموع المتغيرين.', NULL, NULL, '"function sum(a, b) {\n  return a + b;\n}"'::jsonb, NULL, NULL, '[{"input": "sum(2, 3)", "output": "5"}]'::jsonb, 'Hard', 4.90, 1, 'A simple return statement: function sum(a, b) { return a + b; }\nدالة بسيطة تعيد الناتج مباشرة: function sum(a, b) { return a + b; }')
+ON CONFLICT DO NOTHING;
+
+

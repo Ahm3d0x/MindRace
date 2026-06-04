@@ -2668,8 +2668,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontWeight: 700
   },
   roomParamsCard: {
-    display: 'flex',
-    justifyContent: 'space-between',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: '12px',
     padding: '12px 16px',
     backgroundColor: 'rgba(255,255,255,0.02)',
     border: '1px solid rgba(255,255,255,0.04)',
@@ -2678,15 +2679,26 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   paramItem: {
     display: 'flex',
-    gap: '8px',
-    fontSize: '0.85rem'
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    fontSize: '0.8rem',
+    textAlign: 'center'
   },
   paramLabel: {
-    color: '#8a93c0'
+    color: '#8a93c0',
+    fontSize: '0.7rem',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em'
   },
   paramVal: {
     fontWeight: 700,
-    color: '#ffffff'
+    color: '#ffffff',
+    fontSize: '0.85rem',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: '100%'
   },
   participantsGrid: {
     display: 'flex',

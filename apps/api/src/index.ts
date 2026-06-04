@@ -65,6 +65,11 @@ app.get('/', (req, res) => {
   });
 });
 
+// Suppress favicon 404 logs
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end();
+});
+
 // Base health check route
 app.get('/api/v1/health', (req, res) => {
   res.json({

@@ -1,0 +1,39 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root configurations and package manifests
+COPY package*.json ./
+COPY tsconfig.json ./
+COPY apps/api/package*.json ./apps/api/
+COPY packages/shared/package*.json ./packages/shared/
+
+# Install dependencies for all workspaces
+RUN npm ci
+
+# Copy source files
+COPY apps/api ./apps/api
+COPY packages/shared ./packages/shared
+
+# Build the shared library first, then build the API
+RUN npm run build:shared
+RUN npm run build:api
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY tsconfig.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
+
+EXPOSE 5000
+
+ENV NODE_ENV=production
+ENV PORT=5000
+
+CMD ["npm", "run", "start", "-w", "apps/api"]

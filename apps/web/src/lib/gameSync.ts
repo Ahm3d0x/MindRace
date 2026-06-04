@@ -616,19 +616,52 @@ export class GameSyncService {
 
       const excludeIds = existingRounds?.map(r => r.question_id) || [];
 
-      // Query new random question not used yet
-      let qQuery = supabase.from("questions").select("id").limit(1);
+      // ── Category Weighting Support ──────────────────────────────────────
+      // If the room config has categoryWeights (e.g. {"Science": 50, "Math": 30}),
+      // pick from the weighted category using a random roll.
+      const categoryWeights: { [cat: string]: number } = room?.config?.categoryWeights || {};
+      const weightEntries = Object.entries(categoryWeights).filter(([, w]) => w > 0);
+
+      let selectedCategory: string | null = null;
+      if (weightEntries.length > 0) {
+        const totalWeight = weightEntries.reduce((sum, [, w]) => sum + w, 0);
+        let roll = Math.random() * totalWeight;
+        for (const [cat, w] of weightEntries) {
+          roll -= w;
+          if (roll <= 0) {
+            selectedCategory = cat;
+            break;
+          }
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      // Build question query, excluding already-used questions
+      let qQuery = supabase.from("questions").select("id");
       if (excludeIds.length > 0) {
         qQuery = qQuery.not("id", "in", `(${excludeIds.join(",")})`);
       }
-      
+      if (selectedCategory) {
+        qQuery = qQuery.ilike("category", `%${selectedCategory}%`);
+      }
+      qQuery = qQuery.limit(20); // Fetch up to 20 candidates, pick one randomly
+
       const { data: dbQs } = await qQuery;
-      let nextQId = dbQs && dbQs.length > 0 ? dbQs[0].id : null;
+      let nextQId: string | null = null;
+      if (dbQs && dbQs.length > 0) {
+        // Pick randomly from candidates to avoid always getting the first inserted question
+        nextQId = dbQs[Math.floor(Math.random() * dbQs.length)].id;
+      }
 
       if (!nextQId) {
-        // Fallback to any random question if exhausted
-        const { data: fallbackQ } = await supabase.from("questions").select("id").limit(1);
-        nextQId = fallbackQ && fallbackQ.length > 0 ? fallbackQ[0].id : null;
+        // Fallback: try without category filter or exclusions if pool is exhausted
+        const { data: fallbackQ } = await supabase
+          .from("questions")
+          .select("id")
+          .limit(20);
+        if (fallbackQ && fallbackQ.length > 0) {
+          nextQId = fallbackQ[Math.floor(Math.random() * fallbackQ.length)].id;
+        }
       }
 
       if (nextQId) {

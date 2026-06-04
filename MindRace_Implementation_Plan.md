@@ -17,7 +17,7 @@ Mind Race is a multi-mode knowledge competition platform supporting solo trainin
 
 ### 1.1 Project Setup
 
-- [ ] Choose and initialize the tech stack (e.g., React/Next.js frontend, Node.js/NestJS backend, supabase + Redis)
+- [ ] Choose and initialize the tech stack (e.g., React/Next.js frontend, Node.js/NestJS backend, supabase + supabase realtime + Redis)
 - [ ] Set up monorepo structure (apps/web, apps/api, packages/shared)
 - [ ] Configure CI/CD pipeline (GitHub Actions or similar)
 - [ ] Set up staging and production environments

@@ -415,7 +415,77 @@ router.delete('/:id', requireAuth as any, async (req: AuthenticatedRequest, res:
   }
 });
 
-// 6. Grade submission for a question
+// 6. Rate a question (5-star system, 1–5 integer, authenticated players)
+router.post('/:id/rate', requireAuth as any, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { rating: userRating } = req.body;
+
+  const ratingNum = Number(userRating);
+  if (!userRating || isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5 || !Number.isInteger(ratingNum)) {
+    return res.status(400).json({ error: 'Rating must be an integer between 1 and 5' });
+  }
+
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  if (!isUuid) {
+    return res.status(404).json({ error: 'Question not found or is a static question' });
+  }
+
+  try {
+    // Fetch current rating values
+    const { data: existing, error: fetchErr } = await supabaseAdmin
+      .from('questions')
+      .select('rating, rating_count')
+      .eq('id', id)
+      .single();
+
+    if (fetchErr || !existing) {
+      return res.status(404).json({ error: 'Question not found' });
+    }
+
+    // Compute rolling average: newAvg = (oldAvg * oldCount + newRating) / (oldCount + 1)
+    const oldCount = Number(existing.rating_count) || 0;
+    const oldAvg = Number(existing.rating) || 0;
+    const newCount = oldCount + 1;
+    const newAvg = Number(((oldAvg * oldCount + ratingNum) / newCount).toFixed(2));
+
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('questions')
+      .update({ rating: newAvg, rating_count: newCount })
+      .eq('id', id)
+      .select('id, rating, rating_count')
+      .single();
+
+    if (updateErr) {
+      return res.status(500).json({ error: updateErr.message });
+    }
+
+    return res.json({ status: 'success', id: updated.id, rating: updated.rating, ratingCount: updated.rating_count });
+  } catch (err) {
+    console.error('Rate question endpoint error:', err);
+    return res.status(500).json({ error: 'Internal server error rating question' });
+  }
+});
+
+// 7. Get all available question categories (for UI category pickers & weighting config)
+router.get('/meta/categories', requireAuth as any, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('questions')
+      .select('category');
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    const categories = [...new Set((data || []).map((q: any) => q.category))].sort();
+    return res.json({ categories });
+  } catch (err) {
+    console.error('Categories endpoint error:', err);
+    return res.status(500).json({ error: 'Internal server error getting categories' });
+  }
+});
+
+// 8. Grade submission for a question
 router.post('/:id/grade', requireAuth as any, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
   const { answer } = req.body;

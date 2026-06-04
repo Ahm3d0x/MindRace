@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { GameEvents, BuzzerType, GameModeType, Question } from '@mind-race/shared';
+import { BuzzerType, GameModeType, Question } from '@mind-race/shared';
+import { GameSyncService } from '../lib/gameSync';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabase';
@@ -296,7 +296,93 @@ export default function ClientPage() {
   
   // Timers and Refs
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const socketRef = useRef<Socket | null>(null);
+  const gameSyncRef = useRef<GameSyncService | null>(null);
+  const activeRoundRef = useRef<any>(null);
+
+  const setupGameSyncCallbacks = (sync: GameSyncService) => {
+    sync.setCallbacks({
+      onParticipantsUpdate: (list) => {
+        setParticipants(list);
+      },
+      onConfigUpdate: (config) => {
+        setCurrentRoom((prev: any) => prev ? { ...prev, config } : null);
+      },
+      onGameStart: () => {
+        playSFX('slam');
+        triggerVibrate([200, 100, 200]);
+        setScreen('cinematic');
+      },
+      onRoundStart: (data) => {
+        setGameMode(currentRoom?.config?.mode || 'FREE_FOR_ALL');
+        activeRoundRef.current = { id: data.roundId, started_at: Date.now() };
+        
+        setGameQuestions((prev) => {
+          const list = [...prev];
+          list[data.roundIndex] = data.question;
+          return list;
+        });
+        setCurrentQIndex(data.roundIndex);
+        setTimeLeft(data.timeLeft);
+        setBuzzerActive(true);
+        setIsBuzzed(false);
+        setBuzzedUser(null);
+        setSelectedOption(null);
+        setTextAnswer('');
+        setMatchingSelections({});
+        setActiveLeftTerm(null);
+        setAnswerSubmitted(false);
+        setIsAnswerCorrect(null);
+        setRevealedCorrectAnswer(null);
+
+        if (data.question.type === 'ORDERING_QUESTION' && data.question.options) {
+          const shuffled = [...data.question.options].sort(() => Math.random() - 0.5);
+          setOrderIds(shuffled.map((o: any) => o.id));
+        }
+
+        setScreen('game');
+      },
+      onTick: (data) => {
+        setTimeLeft(data.timeLeft);
+      },
+      onBuzzed: (data) => {
+        playSFX('buzz');
+        setIsBuzzed(true);
+        setBuzzedUser(data.username);
+      },
+      onRoundEnded: (data) => {
+        setIsAnswerCorrect(data.isCorrect);
+        setRevealedCorrectAnswer(data.correctAnswer);
+        setAnswerSubmitted(true);
+
+        if (data.isCorrect) {
+          playSFX('correct');
+        } else {
+          playSFX('wrong');
+        }
+
+        if (data.scores) {
+          const selfScore = data.scores[user!.id];
+          setScore(selfScore || 0);
+
+          const oppId = Object.keys(data.scores).find(id => id !== user!.id);
+          if (oppId) {
+            setOpponentScore(data.scores[oppId] || 0);
+          }
+        }
+      },
+      onGameEnded: (data) => {
+        playSFX('slam');
+        setScreen('summary');
+        refreshProfile();
+      },
+      onPowerUpUsed: (data) => {
+        if (data.powerUpType === 'FREEZE' && data.targetUserId === user!.id) {
+          triggerGamingAlert(isRtl ? 'تم تجميدك من قبل الخصم!' : 'You have been frozen by the opponent!', 'warning');
+          setTimeLeft(prev => Math.max(0, prev - 10));
+        }
+      }
+    });
+  };
 
   // -----------------------------------------------------------------
   // HOISTED FUNCTION DECLARATIONS (Resolves eslint variable access order)
@@ -382,15 +468,16 @@ export default function ClientPage() {
       return;
     }
 
-    // Co-ordinate multiplayer matches via Socket.io instead of local grading
-    if (currentRoom) {
-      if (socketRef.current) {
-        socketRef.current.emit('game:submit_answer', {
-          roomId: currentRoom.id,
-          answer: userAns
-        });
-      }
+    // Co-ordinate multiplayer matches via Supabase Realtime Service instead of local grading
+    if (currentRoom && gameSyncRef.current && activeRoundRef.current) {
       setAnswerSubmitted(true);
+      const elapsedMs = Date.now() - activeRoundRef.current.started_at;
+      await gameSyncRef.current.submitAnswer(
+        activeRoundRef.current.id,
+        userAns,
+        elapsedMs,
+        activePowerUps
+      );
       return;
     }
 
@@ -565,128 +652,24 @@ export default function ClientPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // WebSocket setup
+  // Clean up GameSyncService on unmount
   useEffect(() => {
-    if (!user) return;
-
-    const setupSocket = async () => {
-      setSocketStatus('connecting');
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-
-      if (!token) return;
-
-      const socket = io(SOCKET_URL, {
-        reconnectionAttempts: 5,
-        timeout: 10000,
-        auth: { token },
-      });
-
-      socketRef.current = socket;
-
-      socket.on('connect', () => {
-        setSocketStatus('connected');
-      });
-
-      socket.on('disconnect', () => {
-        setSocketStatus('disconnected');
-        if (screen === 'lobby') {
-          setScreen('dashboard');
-        }
-      });
-
-      socket.on(GameEvents.ROOM_STATE_CHANGE, (data: { event: string; participants?: any[] }) => {
-        if (data.event === 'PARTICIPANTS_UPDATE' && data.participants) {
-          setParticipants(data.participants);
-        }
-      });
-
-      socket.on('room:config_updated', (data: { config: any }) => {
-        setCurrentRoom((prev: any) => prev ? { ...prev, config: data.config } : null);
-      });
-
-      socket.on(GameEvents.START_GAME, () => {
-        playSFX('slam');
-        triggerVibrate([200, 100, 200]);
-        setScreen('cinematic');
-      });
-
-      // Multiplayer synchronized gameplay events
-      socket.on('game:round_start', (data: { roundIndex: number; totalRounds: number; question: any; timeLeft: number; scores: any }) => {
-        setGameMode('FREE_FOR_ALL');
-        setGameQuestions(prev => {
-          const list = [...prev];
-          list[data.roundIndex] = data.question;
-          return list;
-        });
-        setCurrentQIndex(data.roundIndex);
-        setTimeLeft(data.timeLeft);
-        setBuzzerActive(true);
-        setIsBuzzed(false);
-        setBuzzedUser(null);
-        setSelectedOption(null);
-        setTextAnswer('');
-        setMatchingSelections({});
-        setActiveLeftTerm(null);
-        setAnswerSubmitted(false);
-        setIsAnswerCorrect(null);
-        setRevealedCorrectAnswer(null);
-
-        if (data.question.type === 'ORDERING_QUESTION' && data.question.options) {
-          const shuffled = [...data.question.options].sort(() => Math.random() - 0.5);
-          setOrderIds(shuffled.map((o: any) => o.id));
-        }
-
-        setScreen('game');
-      });
-
-      socket.on('game:tick', (data: { timeLeft: number }) => {
-        setTimeLeft(data.timeLeft);
-      });
-
-      socket.on('game:buzzed', (data: { userId: string; username: string }) => {
-        playSFX('buzz');
-        setIsBuzzed(true);
-        setBuzzedUser(data.username);
-      });
-
-      socket.on('game:round_ended', (data: { userId: string | null; isCorrect: boolean; correctAnswer: any; explanation: string; scores: any }) => {
-        setIsAnswerCorrect(data.isCorrect);
-        setRevealedCorrectAnswer(data.correctAnswer);
-        setAnswerSubmitted(true);
-        
-        if (data.isCorrect) {
-          playSFX('correct');
-        } else {
-          playSFX('wrong');
-        }
-
-        if (data.scores) {
-          const selfScore = data.scores[user.id] || 0;
-          setScore(selfScore);
-          
-          const oppId = Object.keys(data.scores).find(id => id !== user.id);
-          if (oppId) {
-            setOpponentScore(data.scores[oppId]);
-          }
-        }
-      });
-
-      socket.on('game:ended', () => {
-        playSFX('slam');
-        setScreen('summary');
-        refreshProfile();
-      });
-    };
-
-    setupSocket();
-
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      if (gameSyncRef.current) {
+        gameSyncRef.current.disconnect();
+        gameSyncRef.current = null;
       }
     };
-  }, [user, screen, refreshProfile]);
+  }, []);
+
+  // Sync connection status based on room status
+  useEffect(() => {
+    if (currentRoom && gameSyncRef.current) {
+      setSocketStatus('connected');
+    } else {
+      setSocketStatus('disconnected');
+    }
+  }, [currentRoom]);
 
   // Handle Game Timer Tick (Only in local solo modes)
   useEffect(() => {
@@ -730,19 +713,13 @@ export default function ClientPage() {
   // ==========================================
   // API Operations
   // ==========================================
-  const createRoom = async () => {
-    playSFX('click');
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`${API_URL}/api/v1/rooms`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          type: 'PUBLIC',
-          config: {
+    const createRoom = async () => {
+      playSFX('click');
+      try {
+        const { data: room, error: roomError } = await supabase.rpc('create_room_secure', {
+          p_host_id: user!.id,
+          p_type: selectedMode === 'PRACTICE' || selectedMode === 'TIMED_CHALLENGE' || selectedMode === 'SURVIVAL' || selectedMode === 'DAILY_CHALLENGE' ? 'PRIVATE' : 'PUBLIC',
+          p_config: {
             mode: selectedMode,
             maxPlayers: selectedMaxPlayers,
             roundsCount: selectedRounds,
@@ -751,151 +728,259 @@ export default function ClientPage() {
             allowedPowerUps: ['JOKER', 'FREEZE', 'SHIELD'],
             categoryWeights: { 'General': 100 }
           }
-        })
-      });
-
-      if (!res.ok) {
-        triggerGamingAlert('Failed to create room. Make sure API server is running.', 'error');
-        return;
-      }
-
-      const room = await res.json();
-      setCurrentRoom(room);
-      setParticipants([{
-        userId: user?.id,
-        username: user?.username,
-        isHost: true,
-        isReady: true,
-        score: 0
-      }]);
-      setScreen('lobby');
-
-      if (socketRef.current) {
-        socketRef.current.emit(GameEvents.JOIN_ROOM, {
-          roomId: room.id,
-          username: user?.username
         });
-      }
-    } catch (e) {
-      console.error(e);
-      triggerGamingAlert('Error connecting to the API server.', 'error');
-    }
-  };
 
-  const joinRoomByCode = async () => {
-    playSFX('click');
-    if (!roomCodeInput.trim()) return;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`${API_URL}/api/v1/rooms/join`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          code: roomCodeInput.trim().toUpperCase(),
-          isSpectator: isSpectatorJoin
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        triggerGamingAlert(data.error || 'Failed to join room', 'error');
-        return;
-      }
-
-      const detailsRes = await fetch(`${API_URL}/api/v1/rooms/${data.roomId}`, {
-        headers: {
-          'Authorization': `Bearer ${session?.access_token}`
+        if (roomError || !room || room.length === 0) {
+          triggerGamingAlert('Failed to create room: ' + (roomError?.message || 'unknown error'), 'error');
+          return;
         }
-      });
-      const details = await detailsRes.json();
-      
-      setCurrentRoom(details);
-      setParticipants(details.participants);
-      setScreen('lobby');
 
-      if (socketRef.current) {
-        socketRef.current.emit(GameEvents.JOIN_ROOM, {
-          roomId: details.id,
-          username: user?.username
-        });
+        const roomData = room[0];
+        setCurrentRoom(roomData);
+        setScreen('lobby');
+        
+        const sync = new GameSyncService(roomData.id, user!.id, user!.username, true);
+        gameSyncRef.current = sync;
+        setupGameSyncCallbacks(sync);
+        await sync.connect();
+      } catch (e) {
+        console.error(e);
+        triggerGamingAlert('Error creating room.', 'error');
       }
-    } catch (e) {
-      console.error(e);
-      triggerGamingAlert('Error joining room.', 'error');
-    }
-  };
-
-  const leaveRoom = async () => {
-    playSFX('click');
-    if (!currentRoom) return;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      await fetch(`${API_URL}/api/v1/rooms/${currentRoom.id}/leave`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session?.access_token}`
-        }
-      });
-
-      if (socketRef.current) {
-        socketRef.current.emit(GameEvents.LEAVE_ROOM, { roomId: currentRoom.id });
-      }
-
-      setScreen('dashboard');
-      setCurrentRoom(null);
-      setParticipants([]);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const toggleReady = () => {
-    playSFX('click');
-    if (!currentRoom || !socketRef.current) return;
-    
-    const self = participants.find(p => p.userId === user?.id);
-    const nextReady = !self?.isReady;
-
-    socketRef.current.emit(GameEvents.PLAYER_READY, {
-      roomId: currentRoom.id,
-      isReady: nextReady
-    });
-  };
-
-  const startLobbyGame = () => {
-    playSFX('click');
-    if (!currentRoom || !socketRef.current) return;
-    
-    socketRef.current.emit(GameEvents.START_GAME, {
-      roomId: currentRoom.id
-    });
-  };
-
-  const updateRoomConfig = (newConfig: any) => {
-    if (!currentRoom || !socketRef.current || currentRoom.host_id !== user?.id) return;
-    const updatedConfig = {
-      ...currentRoom.config,
-      ...newConfig
     };
-    socketRef.current.emit('room:update_config', {
-      roomId: currentRoom.id,
-      config: updatedConfig
-    });
-  };
 
-  const changeTeam = (teamId: 'team_a' | 'team_b' | null) => {
-    playSFX('click');
-    if (!currentRoom || !socketRef.current) return;
-    socketRef.current.emit('room:change_team', {
-      roomId: currentRoom.id,
-      teamId
-    });
-  };
+    const joinRoomByCode = async () => {
+      playSFX('click');
+      if (!roomCodeInput.trim()) return;
+      const code = roomCodeInput.trim().toUpperCase();
+
+      try {
+        const { data: room, error: roomError } = await supabase
+          .from('rooms')
+          .select('*')
+          .eq('code', code)
+          .maybeSingle();
+
+         if (roomError || !room) {
+           triggerGamingAlert('Room not found', 'error');
+           return;
+         }
+
+         if (room.status !== 'WAITING' && !isSpectatorJoin) {
+           triggerGamingAlert(isRtl ? 'بدأت اللعبة بالفعل!' : 'Match has already started in this room.', 'error');
+           return;
+         }
+
+         const { count, error: countError } = await supabase
+           .from('room_participants')
+           .select('id', { count: 'exact', head: true })
+           .eq('room_id', room.id)
+           .eq('is_spectator', false);
+
+         if (countError) {
+           triggerGamingAlert('Error checking players limit.', 'error');
+           return;
+         }
+
+         if (!isSpectatorJoin && count && count >= room.max_players) {
+           triggerGamingAlert(isRtl ? 'الغرفة ممتلئة!' : 'Room is full', 'error');
+           return;
+         }
+
+         const { error: joinError } = await supabase
+           .from('room_participants')
+           .upsert({
+             room_id: room.id,
+             user_id: user!.id,
+             is_host: room.host_id === user!.id,
+             is_ready: room.host_id === user!.id,
+             score: 0,
+             is_spectator: !!isSpectatorJoin
+           }, {
+             onConflict: 'room_id,user_id'
+           });
+
+         if (joinError) {
+           triggerGamingAlert('Failed to join room: ' + joinError.message, 'error');
+           return;
+         }
+
+         const { data: participantsList, error: partError } = await supabase
+           .from('room_participants')
+           .select(`
+             score,
+             is_host,
+             is_ready,
+             team_id,
+             is_spectator,
+             user_id,
+             profiles (
+               username,
+               avatar_url,
+               rank
+             )
+           `)
+           .eq('room_id', room.id);
+
+         if (partError) {
+           triggerGamingAlert('Failed to fetch room participants.', 'error');
+           return;
+         }
+
+         const formattedParticipants = (participantsList || []).map((p: any) => ({
+           userId: p.user_id,
+           username: p.profiles?.username || 'Player',
+           avatarUrl: p.profiles?.avatar_url || null,
+           rank: p.profiles?.rank || 'Bronze',
+           score: p.score,
+           isHost: p.is_host,
+           isReady: p.is_ready,
+           teamId: p.team_id,
+           isSpectator: p.is_spectator
+         }));
+
+         const roomDetails = {
+           ...room,
+           participants: formattedParticipants
+         };
+
+         setCurrentRoom(roomDetails);
+         setParticipants(formattedParticipants);
+         setScreen('lobby');
+
+         const sync = new GameSyncService(room.id, user!.id, user!.username, room.host_id === user!.id);
+         gameSyncRef.current = sync;
+         setupGameSyncCallbacks(sync);
+         await sync.connect();
+       } catch (e) {
+         console.error(e);
+         triggerGamingAlert('Error joining room.', 'error');
+       }
+     };
+
+     const leaveRoom = async () => {
+       playSFX('click');
+       if (!currentRoom) return;
+
+       try {
+         await supabase
+           .from('room_participants')
+           .delete()
+           .eq('room_id', currentRoom.id)
+           .eq('user_id', user!.id);
+
+         if (gameSyncRef.current) {
+           gameSyncRef.current.disconnect();
+           gameSyncRef.current = null;
+         }
+
+         setScreen('dashboard');
+         setCurrentRoom(null);
+         setParticipants([]);
+       } catch (e) {
+         console.error(e);
+       }
+     };
+
+     const toggleReady = async () => {
+       playSFX('click');
+       if (!currentRoom) return;
+       
+       const self = participants.find(p => p.userId === user!.id);
+       const nextReady = !self?.isReady;
+
+       await supabase
+         .from('room_participants')
+         .update({ is_ready: nextReady })
+         .eq('room_id', currentRoom.id)
+         .eq('user_id', user!.id);
+     };
+
+     const startLobbyGame = async () => {
+       playSFX('click');
+       if (!currentRoom) return;
+
+       try {
+         const roundsLimit = currentRoom.config?.roundsCount || 5;
+
+         const { data: dbQs } = await supabase
+           .from('questions')
+           .select('id')
+           .limit(roundsLimit);
+
+         if (!dbQs || dbQs.length === 0) {
+           triggerGamingAlert('No questions found in database schema to start game.', 'error');
+           return;
+         }
+
+         await supabase
+           .from('rooms')
+           .update({ status: 'ACTIVE' })
+           .eq('id', currentRoom.id);
+
+         const { data: match, error: matchError } = await supabase
+           .from('matches')
+           .insert({
+             room_id: currentRoom.id,
+             mode: currentRoom.config?.mode || 'FREE_FOR_ALL',
+             total_rounds: roundsLimit,
+             status: 'ACTIVE',
+             config: currentRoom.config,
+             started_at: new Date().toISOString()
+           })
+           .select()
+           .single();
+
+         if (matchError || !match) {
+           triggerGamingAlert('Failed to create match: ' + matchError?.message, 'error');
+           return;
+         }
+
+         const { error: roundError } = await supabase
+           .from('match_rounds')
+           .insert({
+             match_id: match.id,
+             round_number: 0,
+             question_id: dbQs[0].id,
+             started_at: new Date().toISOString()
+           });
+
+         if (roundError) {
+           triggerGamingAlert('Failed to create first round: ' + roundError.message, 'error');
+           return;
+         }
+       } catch (e) {
+         console.error(e);
+         triggerGamingAlert('Error starting game.', 'error');
+       }
+     };
+
+     const updateRoomConfig = async (newConfig: any) => {
+       if (!currentRoom || currentRoom.host_id !== user!.id) return;
+       const updatedConfig = {
+         ...currentRoom.config,
+         ...newConfig
+       };
+       
+       await supabase
+         .from('rooms')
+         .update({
+           config: updatedConfig,
+           max_players: updatedConfig.maxPlayers || 10
+         })
+         .eq('id', currentRoom.id);
+     };
+
+     const changeTeam = async (teamId: 'team_a' | 'team_b' | null) => {
+       playSFX('click');
+       if (!currentRoom) return;
+       
+       await supabase
+         .from('room_participants')
+         .update({ team_id: teamId })
+         .eq('room_id', currentRoom.id)
+         .eq('user_id', user!.id);
+     };
 
   // ==========================================
   // Game Board Operations
@@ -972,20 +1057,18 @@ export default function ClientPage() {
     loadQuestion(0);
   };
 
-  const handleBuzz = () => {
+  const handleBuzz = async () => {
     if (!buzzerActive || isBuzzed) return;
     
-    if (currentRoom) {
-      if (socketRef.current) {
-        socketRef.current.emit('game:buzz', { roomId: currentRoom.id });
-      }
+    if (currentRoom && gameSyncRef.current && activeRoundRef.current) {
+      await gameSyncRef.current.buzz(activeRoundRef.current.id);
       return;
     }
 
     playSFX('buzz');
     triggerVibrate(150);
     setIsBuzzed(true);
-    setBuzzedUser(user?.username || 'Player');
+    setBuzzedUser(user!.username);
     setTimeLeft(10);
   };
 

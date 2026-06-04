@@ -1,0 +1,23 @@
+{
+  "name": "mind-race",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mind Race — Multi-mode Knowledge Competition Platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w apps/web",
+    "dev:api": "npm run dev -w apps/api",
+    "build:shared": "npm run build -w packages/shared",
+    "build:web": "npm run build -w apps/web",
+    "build:api": "npm run build -w apps/api",
+    "build": "npm run build:shared && npm run build:web && npm run build:api",
+    "dev": "concurrently -n \"web,api\" -c \"cyan,magenta\" \"npm run dev -w apps/web\" \"npm run dev -w apps/api\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  }
+}

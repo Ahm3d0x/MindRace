@@ -367,6 +367,12 @@ export default function ClientPage() {
   const [isAnswerCorrect, setIsAnswerCorrect] = useState<boolean | null>(null);
   const [revealedCorrectAnswer, setRevealedCorrectAnswer] = useState<any>(null);
   
+  // Chat and Signaling states
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<{ sender: string; message: string; teamId: string | null }[]>([]);
+  const [floatingMessage, setFloatingMessage] = useState<{ sender: string; message: string; teamId: string | null } | null>(null);
+  const [showSignalMenu, setShowSignalMenu] = useState(false);
+  
   // Timers and Refs
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const gameSyncRef = useRef<GameSyncService | null>(null);
@@ -452,6 +458,30 @@ export default function ClientPage() {
         if (data.powerUpType === 'FREEZE' && data.targetUserId === user!.id) {
           triggerGamingAlert(isRtl ? 'تم تجميدك من قبل الخصم!' : 'You have been frozen by the opponent!', 'warning');
           setTimeLeft(prev => Math.max(0, prev - 10));
+        }
+      },
+      onChatMessage: (data) => {
+        setChatMessages(prev => [
+          ...prev,
+          { sender: data.username, message: data.message, teamId: data.teamId || null }
+        ]);
+        playSFX('click');
+        
+        const selfId = user?.id;
+        const activeParts = gameSyncRef.current?.activeParticipants || [];
+        const selfPart = activeParts.find(p => p.userId === selfId);
+        const myTeam = selfPart?.teamId || null;
+        
+        if (!data.teamId || data.teamId === myTeam) {
+          setFloatingMessage({ sender: data.username, message: data.message, teamId: data.teamId || null });
+          setTimeout(() => {
+            setFloatingMessage(prev => {
+              if (prev && prev.sender === data.username && prev.message === data.message) {
+                return null;
+              }
+              return prev;
+            });
+          }, 3500);
         }
       }
     });
@@ -1094,11 +1124,40 @@ export default function ClientPage() {
        playSFX('click');
        if (!currentRoom) return;
        
+       if (teamId) {
+         const maxPlayers = currentRoom.max_players || 10;
+         const maxTeamSize = Math.floor(maxPlayers / 2);
+         const teamCount = participants.filter(p => p.teamId === teamId && p.userId !== user!.id).length;
+         
+         if (teamCount >= maxTeamSize) {
+           triggerGamingAlert(
+             isRtl 
+               ? `الفريق ممتلئ! الحد الأقصى هو ${maxTeamSize} لاعبين.`
+               : `Team is full! Maximum is ${maxTeamSize} players.`,
+             'warning'
+           );
+           return;
+         }
+       }
+
        await supabase
          .from('room_participants')
          .update({ team_id: teamId })
          .eq('room_id', currentRoom.id)
          .eq('user_id', user!.id);
+     };
+
+     const sendChatMessage = () => {
+       if (!chatInput.trim() || !gameSyncRef.current) return;
+       
+       const selfId = user?.id;
+       const activeParts = gameSyncRef.current.activeParticipants || [];
+       const selfPart = activeParts.find(p => p.userId === selfId);
+       const myTeamId = selfPart?.teamId || null;
+       const isTeamMode = currentRoom?.config?.mode === 'TEAM_BATTLE';
+       
+       gameSyncRef.current.sendChatMessage(chatInput.trim(), isTeamMode ? myTeamId : null);
+       setChatInput('');
      };
 
   // ==========================================
@@ -2166,6 +2225,146 @@ export default function ClientPage() {
                 </div>
               )}
 
+              {/* CHAT BOX */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(10, 12, 22, 0.6)',
+                margin: '10px 0',
+                overflow: 'hidden'
+              }}>
+                {/* Chat Header */}
+                <div style={{
+                  padding: '6px 10px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}>
+                  <span style={{ fontSize: '0.7rem', color: '#8a93c0', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    💬 {currentRoom?.config?.mode === 'TEAM_BATTLE' 
+                      ? (isRtl ? 'دردشة الفريق (الخاصة)' : 'TEAM CHAT (PRIVATE)') 
+                      : (isRtl ? 'دردشة الغرفة العامة' : 'ROOM CHAT (GLOBAL)')}
+                  </span>
+                  {currentRoom?.config?.mode === 'TEAM_BATTLE' && (() => {
+                    const selfPart = participants.find(p => p.userId === user?.id);
+                    const myTeam = selfPart?.teamId;
+                    return (
+                      <span style={{ 
+                        fontSize: '0.65rem', 
+                        color: myTeam === 'team_a' ? '#00f2fe' : myTeam === 'team_b' ? '#ff3b5c' : '#8a93c0', 
+                        fontWeight: 'bold' 
+                      }}>
+                        {myTeam === 'team_a' ? (isRtl ? 'فريق أ' : 'TEAM A') : myTeam === 'team_b' ? (isRtl ? 'فريق ب' : 'TEAM B') : (isRtl ? 'غير معين' : 'UNASSIGNED')}
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                {/* Messages List */}
+                <div style={{
+                  padding: '8px 10px',
+                  height: '100px',
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}>
+                  {(() => {
+                    const selfPart = participants.find(p => p.userId === user?.id);
+                    const myTeamId = selfPart?.teamId || null;
+                    const isTeamMode = currentRoom?.config?.mode === 'TEAM_BATTLE';
+                    
+                    const filteredMessages = chatMessages.filter(msg => {
+                      if (isTeamMode) {
+                        return !msg.teamId || msg.teamId === myTeamId;
+                      }
+                      return true;
+                    });
+
+                    if (filteredMessages.length === 0) {
+                      return (
+                        <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.25)', textAlign: 'center', marginTop: '30px' }}>
+                          {isRtl ? 'لا توجد رسائل بعد. أرسل رسالة للبدء!' : 'No messages yet. Send a message to start!'}
+                        </div>
+                      );
+                    }
+
+                    return filteredMessages.map((msg, i) => {
+                      const isSystem = !msg.sender;
+                      let nameColor = '#a0a7cc';
+                      if (msg.teamId === 'team_a') nameColor = '#00f2fe';
+                      else if (msg.teamId === 'team_b') nameColor = '#ff3b5c';
+                      
+                      return (
+                        <div key={i} style={{ fontSize: '0.75rem', lineHeight: '1.4', wordBreak: 'break-all' }}>
+                          {isSystem ? (
+                            <span style={{ color: '#ffb300', fontStyle: 'italic' }}>{msg.message}</span>
+                          ) : (
+                            <>
+                              <span style={{ color: nameColor, fontWeight: 700 }}>{msg.sender}: </span>
+                              <span style={{ color: '#f0f4ff' }}>{msg.message}</span>
+                            </>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* Chat Input Field */}
+                <div style={{
+                  display: 'flex',
+                  borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                  backgroundColor: 'rgba(5, 6, 15, 0.4)'
+                }}>
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        sendChatMessage();
+                      }
+                    }}
+                    placeholder={
+                      currentRoom?.config?.mode === 'TEAM_BATTLE' 
+                        ? (isRtl ? 'اكتب لزملائك في الفريق...' : 'Type to your teammates...') 
+                        : (isRtl ? 'اكتب رسالة للغرفة...' : 'Type a message to room...')
+                    }
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: '#ffffff',
+                      fontSize: '0.75rem',
+                      padding: '8px 10px',
+                      direction: isRtl ? 'rtl' : 'ltr'
+                    }}
+                  />
+                  <button
+                    onClick={sendChatMessage}
+                    style={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      border: 'none',
+                      borderLeft: isRtl ? 'none' : '1px solid rgba(255, 255, 255, 0.08)',
+                      borderRight: isRtl ? '1px solid rgba(255, 255, 255, 0.08)' : 'none',
+                      color: '#4facfe',
+                      fontSize: '0.75rem',
+                      fontWeight: 'bold',
+                      padding: '0 12px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {isRtl ? 'إرسال' : 'Send'}
+                  </button>
+                </div>
+              </div>
+
               <div style={styles.lobbyActionsRow}>
                 <button style={styles.leaveLobbyBtn} onClick={leaveRoom}>
                   {t.leaveRoom}
@@ -2198,43 +2397,195 @@ export default function ClientPage() {
         })()}
 
         {/* SCREEN: MATCH INTRO CINEMATIC */}
-        {screen === 'cinematic' && (
-          <div style={styles.cinematicOverlay} onClick={enterGameScreen}>
-            <div style={styles.cinematicPulseText} className="text-glow">
-              {t.vsSlam}
-            </div>
-            
-            <div style={styles.cinematicFlexRow}>
-              <div style={styles.cinematicTeamSide}>
-                <div style={styles.avatarCircleHuge}>👤</div>
-                <div style={styles.teamSlamName}>{user.username}</div>
-                <div style={styles.teamSlamRank}>{user.rank}</div>
+        {screen === 'cinematic' && (() => {
+          const selfPart = participants.find(p => p.userId === user?.id);
+          const myTeamId = selfPart?.teamId;
+          const isTeamMode = currentRoom?.config?.mode === 'TEAM_BATTLE';
+          
+          let leftSideTitle: string = user.username;
+          let leftSideSub: string = user.rank;
+          let leftSideAvatars = [<div key="self" style={styles.avatarCircleHuge}>👤</div>];
+          
+          let rightSideTitle: string = t.opponent;
+          let rightSideSub: string = 'TITAN I';
+          let rightSideAvatars = [<div key="opp" style={styles.avatarCircleHuge}>🤖</div>];
+          
+          if (currentRoom) {
+            // Multiplayer Match
+            if (isTeamMode) {
+              const myTeamPlayers = participants.filter(p => !p.isSpectator && p.teamId === myTeamId);
+              const oppTeamPlayers = participants.filter(p => !p.isSpectator && p.teamId !== myTeamId && p.teamId !== null);
+              
+              leftSideTitle = myTeamId === 'team_a' ? (isRtl ? 'الفريق أ' : 'TEAM A') : (isRtl ? 'الفريق ب' : 'TEAM B');
+              leftSideSub = `${myTeamPlayers.length} ${isRtl ? 'لاعبين' : 'Players'}`;
+              leftSideAvatars = myTeamPlayers.map((p) => (
+                <div key={p.userId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={styles.avatarCircleHuge}>👤</div>
+                  <span style={{ fontSize: '0.8rem', color: '#ffffff', marginTop: '4px' }}>{p.username}</span>
+                </div>
+              ));
+              
+              rightSideTitle = myTeamId === 'team_a' ? (isRtl ? 'الفريق ب' : 'TEAM B') : (isRtl ? 'الفريق أ' : 'TEAM A');
+              rightSideSub = `${oppTeamPlayers.length} ${isRtl ? 'لاعبين' : 'Players'}`;
+              rightSideAvatars = oppTeamPlayers.map((p) => (
+                <div key={p.userId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={styles.avatarCircleHuge}>👤</div>
+                  <span style={{ fontSize: '0.8rem', color: '#ffffff', marginTop: '4px' }}>{p.username}</span>
+                </div>
+              ));
+            } else {
+              // FFA or 1v1
+              const opponents = participants.filter(p => !p.isSpectator && p.userId !== user?.id);
+              if (opponents.length === 1) {
+                // 1v1 Match
+                const opp = opponents[0];
+                rightSideTitle = opp.username;
+                rightSideSub = opp.rank || 'Bronze';
+                rightSideAvatars = [
+                  <div key={opp.userId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <div style={styles.avatarCircleHuge}>👤</div>
+                  </div>
+                ];
+              } else if (opponents.length > 1) {
+                // FFA with multiple players
+                rightSideTitle = isRtl ? 'المنافسون' : 'ARENA OPPONENTS';
+                rightSideSub = `${opponents.length} ${isRtl ? 'خصوماً' : 'Players'}`;
+                rightSideAvatars = opponents.slice(0, 3).map((p) => (
+                  <div key={p.userId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '0 4px' }}>
+                    <div style={{ ...styles.avatarCircleHuge, width: '60px', height: '60px', fontSize: '1.5rem' }}>👤</div>
+                    <span style={{ fontSize: '0.7rem', color: '#a8b0d3', marginTop: '4px', maxWidth: '70px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.username}
+                    </span>
+                  </div>
+                ));
+              }
+            }
+          }
+          
+          return (
+            <div style={styles.cinematicOverlay} onClick={enterGameScreen}>
+              <div style={styles.cinematicPulseText} className="text-glow">
+                {t.vsSlam}
+              </div>
+              
+              <div style={styles.cinematicFlexRow}>
+                <div style={{ ...styles.cinematicTeamSide, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {leftSideAvatars}
+                  </div>
+                  <div style={{ ...styles.teamSlamName, marginTop: '8px' }}>{leftSideTitle}</div>
+                  <div style={styles.teamSlamRank}>{leftSideSub}</div>
+                </div>
+
+                <div style={styles.cinematicVsText}>VS</div>
+
+                <div style={{ ...styles.cinematicTeamSide, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {rightSideAvatars}
+                  </div>
+                  <div style={{ ...styles.teamSlamName, marginTop: '8px' }}>{rightSideTitle}</div>
+                  <div style={styles.teamSlamRank}>{rightSideSub}</div>
+                </div>
               </div>
 
-              <div style={styles.cinematicVsText}>VS</div>
-
-              <div style={styles.cinematicTeamSide}>
-                <div style={styles.avatarCircleHuge}>🤖</div>
-                <div style={styles.teamSlamName}>{t.opponent}</div>
-                <div style={styles.teamSlamRank}>TITAN I</div>
+              <div style={styles.cinematicInstructions}>
+                {isRtl ? '(اضغط على الشاشة للبدء)' : '(Tap Screen to Begin)'}
               </div>
             </div>
-
-            <div style={styles.cinematicInstructions}>
-              (Tap Screen to Begin)
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* SCREEN: GAME BOARD */}
         {screen === 'game' && gameQuestions.length > 0 && (() => {
           const isInputDisabled = answerSubmitted || isSpectator || (isBuzzed && buzzedUser !== user?.username);
+          
+          const selfPart = participants.find(p => p.userId === user?.id);
+          const myTeamId = selfPart?.teamId || 'team_a';
+          const isTeamMode = gameMode === 'TEAM_BATTLE';
+          
+          let leftTeamName: string = user?.username || 'Player';
+          let leftTeamScore = score;
+          let rightTeamName: string = t.opponent;
+          let rightTeamScore = opponentScore;
+          
+          if (isTeamMode) {
+            const teamAScore = participants
+              .filter(p => !p.isSpectator && p.teamId === 'team_a')
+              .reduce((sum, p) => sum + p.score, 0);
+            const teamBScore = participants
+              .filter(p => !p.isSpectator && p.teamId === 'team_b')
+              .reduce((sum, p) => sum + p.score, 0);
+              
+            if (myTeamId === 'team_b') {
+              leftTeamName = isRtl ? 'فريقك (ب)' : 'YOUR TEAM (B)';
+              leftTeamScore = teamBScore;
+              rightTeamName = isRtl ? 'الخصم (أ)' : 'OPPONENTS (A)';
+              rightTeamScore = teamAScore;
+            } else {
+              leftTeamName = isRtl ? 'فريقك (أ)' : 'YOUR TEAM (A)';
+              leftTeamScore = teamAScore;
+              rightTeamName = isRtl ? 'الخصم (ب)' : 'OPPONENTS (B)';
+              rightTeamScore = teamBScore;
+            }
+          } else if (currentRoom && gameMode === 'FREE_FOR_ALL') {
+            // Free For All (with other players)
+            const activePlayersSorted = [...participants]
+              .filter(p => !p.isSpectator)
+              .sort((a, b) => b.score - a.score);
+              
+            const myIndex = activePlayersSorted.findIndex(p => p.userId === user?.id);
+            const myRank = myIndex !== -1 ? myIndex + 1 : '-';
+            
+            const bestOpponent = activePlayersSorted.find(p => p.userId !== user?.id);
+            rightTeamName = bestOpponent ? `${bestOpponent.username}` : t.opponent;
+            rightTeamScore = bestOpponent ? bestOpponent.score : 0;
+            
+            leftTeamName = `${user?.username} (#${myRank})`;
+            leftTeamScore = score;
+          } else {
+            // 1v1 or Solo Training
+            const opponentPlayer = participants.find(p => p.userId !== user?.id && !p.isSpectator);
+            if (opponentPlayer) {
+              rightTeamName = opponentPlayer.username;
+              rightTeamScore = opponentPlayer.score;
+            }
+          }
+
           return (
             <div style={styles.screenContainer}>
+              {/* FLOATING QUICK SIGNAL OVERLAY */}
+              {floatingMessage && (
+                <div className="animate-float" style={{
+                  position: 'absolute',
+                  bottom: '160px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 999,
+                  backgroundColor: 'rgba(17, 21, 40, 0.95)',
+                  border: `1px solid ${floatingMessage.teamId === 'team_a' ? '#00f2fe' : floatingMessage.teamId === 'team_b' ? '#ff3b5c' : 'rgba(255, 255, 255, 0.15)'}`,
+                  borderRadius: '20px',
+                  padding: '8px 16px',
+                  boxShadow: '0 0 20px rgba(0, 0, 0, 0.6), 0 0 10px rgba(0, 242, 254, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  maxWidth: '85%',
+                  pointerEvents: 'none'
+                }}>
+                  <span style={{ fontSize: '0.85rem' }}>📣</span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: floatingMessage.teamId === 'team_a' ? '#00f2fe' : floatingMessage.teamId === 'team_b' ? '#ff3b5c' : '#ffffff' }}>
+                    {floatingMessage.sender}:
+                  </span>
+                  <span style={{ fontSize: '0.75rem', color: '#f0f4ff', fontWeight: 600 }}>
+                    {floatingMessage.message}
+                  </span>
+                </div>
+              )}
+
               <div style={styles.hudBar}>
                 <div style={styles.hudTeamPanel}>
-                  <span style={styles.hudTeamName}>{user?.username}</span>
-                  <span style={styles.hudTeamScore}>{score} pts</span>
+                  <span style={styles.hudTeamName}>{leftTeamName}</span>
+                  <span style={styles.hudTeamScore}>{leftTeamScore} pts</span>
                   {gameMode === 'SURVIVAL' && (
                     <div style={styles.heartsRow}>
                       {Array.from({ length: 3 }).map((_, i) => (
@@ -2255,11 +2606,51 @@ export default function ClientPage() {
                   <span style={styles.hudRoundCounter}>{t.round} {currentQIndex + 1}/{gameQuestions.length}</span>
                 </div>
 
-                <div style={styles.hudTeamPanel}>
-                  <span style={styles.hudTeamName} className="text-glow-accent">{t.opponent}</span>
-                  <span style={styles.hudTeamScore}>{opponentScore} pts</span>
+                <div style={{ ...styles.hudTeamPanel, alignItems: 'flex-end' }}>
+                  <span style={styles.hudTeamName} className="text-glow-accent">{rightTeamName}</span>
+                  <span style={styles.hudTeamScore}>{rightTeamScore} pts</span>
                 </div>
               </div>
+
+              {/* Live Leaderboard for FFA/Multiplayer */}
+              {gameMode === 'FREE_FOR_ALL' && participants.filter(p => !p.isSpectator).length > 2 && (
+                <div style={{
+                  display: 'flex',
+                  gap: '6px',
+                  padding: '6px 12px',
+                  overflowX: 'auto',
+                  backgroundColor: 'rgba(0,0,0,0.3)',
+                  borderBottom: '1px solid rgba(255,255,255,0.05)',
+                  scrollbarWidth: 'none',
+                  msOverflowStyle: 'none'
+                }}>
+                  {[...participants]
+                    .filter(p => !p.isSpectator)
+                    .sort((a, b) => b.score - a.score)
+                    .map((p, idx) => {
+                      const isSelf = p.userId === user?.id;
+                      return (
+                        <div key={p.userId} style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '2px 8px',
+                          backgroundColor: isSelf ? 'rgba(0, 245, 255, 0.1)' : 'rgba(255,255,255,0.02)',
+                          border: `1px solid ${isSelf ? '#00f5ff' : 'rgba(255,255,255,0.08)'}`,
+                          borderRadius: '12px',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          color: isSelf ? '#00f5ff' : '#8a93c0'
+                        }}>
+                          <span>#{idx + 1}</span>
+                          <span>{p.username}</span>
+                          <span style={{ color: '#ffffff' }}>{p.score}</span>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
 
               <div style={styles.questionZone}>
                 <div style={styles.qHeaderRow}>
@@ -2525,7 +2916,86 @@ export default function ClientPage() {
                 ) : (
                   <>
                     <div style={styles.powerUpInventoryBox}>
-                      <span style={styles.inventoryTitle}>{t.powerups}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={styles.inventoryTitle}>{t.powerups}</span>
+                        {isTeamMode && (
+                          <div style={{ position: 'relative' }}>
+                            <button
+                              onClick={() => setShowSignalMenu(!showSignalMenu)}
+                              style={{
+                                backgroundColor: 'rgba(0, 242, 254, 0.1)',
+                                border: '1px solid rgba(0, 242, 254, 0.3)',
+                                borderRadius: '4px',
+                                padding: '2px 6px',
+                                fontSize: '0.6rem',
+                                color: '#00f2fe',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                outline: 'none'
+                              }}
+                            >
+                              📣 {isRtl ? 'إشارة' : 'SIGNAL'}
+                            </button>
+                            {showSignalMenu && (
+                              <div style={{
+                                position: 'absolute',
+                                bottom: '24px',
+                                right: isRtl ? 'auto' : 0,
+                                left: isRtl ? 0 : 'auto',
+                                backgroundColor: '#111528',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '6px',
+                                padding: '4px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '4px',
+                                zIndex: 1000,
+                                width: '120px',
+                                boxShadow: '0 0 10px rgba(0,0,0,0.5)'
+                              }}>
+                                {[
+                                  { text: isRtl ? "ساعدني هنا!" : "Need help!", icon: "🆘" },
+                                  { text: isRtl ? "جمّده!" : "Freeze them!", icon: "❄️" },
+                                  { text: isRtl ? "ركّز!" : "Focus!", icon: "🎯" },
+                                  { text: isRtl ? "أعرف الإجابة!" : "I know this!", icon: "🧠" }
+                                ].map((sig, idx) => (
+                                  <button
+                                    key={idx}
+                                    onClick={() => {
+                                      const activeParts = gameSyncRef.current?.activeParticipants || [];
+                                      const selfPart = activeParts.find(p => p.userId === user?.id);
+                                      const myTeamId = selfPart?.teamId || null;
+                                      gameSyncRef.current?.sendChatMessage(sig.text, myTeamId);
+                                      setShowSignalMenu(false);
+                                      playSFX('click');
+                                    }}
+                                    style={{
+                                      backgroundColor: 'transparent',
+                                      border: 'none',
+                                      color: '#ffffff',
+                                      padding: '4px 6px',
+                                      fontSize: '0.65rem',
+                                      textAlign: isRtl ? 'right' : 'left',
+                                      cursor: 'pointer',
+                                      borderRadius: '4px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      direction: isRtl ? 'rtl' : 'ltr',
+                                      width: '100%'
+                                    }}
+                                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)')}
+                                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                                  >
+                                    <span>{sig.icon}</span>
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.text}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <div style={styles.powerupList}>
                         {inventoryPowerUps.map((p) => (
                           <button
@@ -2595,10 +3065,28 @@ export default function ClientPage() {
               const rounds = matchReportDetails.rounds as MatchReportData['rounds'];
               
               // Determine Victory/Defeat
-              const topScore = players.length > 0 ? players[0].score : 0;
-              const isVictory = !currentRoom 
-                ? (gameQuestions.length > 0 ? (correctAnswersCount / gameQuestions.length) >= 0.5 : true)
-                : (score >= topScore && score > 0);
+              const isTeamMode = currentRoom?.config?.mode === 'TEAM_BATTLE';
+              const myParticipant = players.find(p => p.userId === user?.id);
+              const myTeamId = myParticipant?.teamId || null;
+
+              const teamAScore = players
+                .filter(p => p.teamId === 'team_a')
+                .reduce((sum, p) => sum + p.score, 0);
+              const teamBScore = players
+                .filter(p => p.teamId === 'team_b')
+                .reduce((sum, p) => sum + p.score, 0);
+
+              let isVictory = false;
+              if (isTeamMode && myTeamId) {
+                const myTeamScore = myTeamId === 'team_a' ? teamAScore : teamBScore;
+                const oppTeamScore = myTeamId === 'team_a' ? teamBScore : teamAScore;
+                isVictory = myTeamScore >= oppTeamScore;
+              } else {
+                const topScore = players.length > 0 ? players[0].score : 0;
+                isVictory = !currentRoom 
+                  ? (gameQuestions.length > 0 ? (correctAnswersCount / gameQuestions.length) >= 0.5 : true)
+                  : (score >= topScore && score > 0);
+              }
 
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%' }}>
@@ -2660,6 +3148,71 @@ export default function ClientPage() {
                       </span>
                     </div>
                   </div>
+
+                  {/* Team Battle Score Comparison Grid */}
+                  {isTeamMode && (
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '16px',
+                      padding: '16px',
+                      backgroundColor: 'rgba(17, 19, 31, 0.8)',
+                      border: '1px solid rgba(255, 255, 255, 0.05)',
+                      borderRadius: '12px',
+                      textAlign: 'center',
+                      marginTop: '-8px'
+                    }}>
+                      {/* Team A */}
+                      <div style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        padding: '12px',
+                        border: `2px solid ${teamAScore >= teamBScore ? '#00f2fe' : 'transparent'}`,
+                        backgroundColor: 'rgba(0, 242, 254, 0.02)',
+                        borderRadius: '8px',
+                        position: 'relative'
+                      }}>
+                        {teamAScore >= teamBScore && (
+                          <span style={{ position: 'absolute', top: '-14px', left: '50%', transform: 'translateX(-50%)', fontSize: '1.2rem' }}>👑</span>
+                        )}
+                        <span style={{ fontSize: '0.8rem', color: '#00f2fe', fontWeight: 800 }}>
+                          {isRtl ? 'الفريق أ (الأزرق)' : 'TEAM A (Blue)'}
+                        </span>
+                        <span style={{ fontSize: '1.8rem', fontWeight: 900, color: '#ffffff' }}>
+                          {teamAScore}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                          {`${players.filter(p => p.teamId === 'team_a').length} ${isRtl ? 'لاعبين' : 'Players'}`}
+                        </span>
+                      </div>
+
+                      {/* Team B */}
+                      <div style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        padding: '12px',
+                        border: `2px solid ${teamBScore >= teamAScore ? '#ff3b5c' : 'transparent'}`,
+                        backgroundColor: 'rgba(255, 59, 92, 0.02)',
+                        borderRadius: '8px',
+                        position: 'relative'
+                      }}>
+                        {teamBScore >= teamAScore && (
+                          <span style={{ position: 'absolute', top: '-14px', left: '50%', transform: 'translateX(-50%)', fontSize: '1.2rem' }}>👑</span>
+                        )}
+                        <span style={{ fontSize: '0.8rem', color: '#ff3b5c', fontWeight: 800 }}>
+                          {isRtl ? 'الفريق ب (الأحمر)' : 'TEAM B (Red)'}
+                        </span>
+                        <span style={{ fontSize: '1.8rem', fontWeight: 900, color: '#ffffff' }}>
+                          {teamBScore}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                          {`${players.filter(p => p.teamId === 'team_b').length} ${isRtl ? 'لاعبين' : 'Players'}`}
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Rewards Panel */}
                   <div style={styles.rewardsPanelCard}>

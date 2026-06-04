@@ -123,7 +123,6 @@ Mind Race is a multi-mode knowledge competition platform supporting solo trainin
 ## Phase 3 — Multiplayer & Real-Time Systems
 
 **Goal:** Enable live multiplayer: 1v1 through 5v5, Free For All, and Team Battle modes.
-**Estimated Duration:**
 
 ### 3.1 Real-Time Game Sync
 
@@ -138,7 +137,7 @@ Mind Race is a multi-mode knowledge competition platform supporting solo trainin
 
 - [ ] Implement team assignment (1v1, 2v2, 3v3, 4v4, 5v5)
 - [ ] Build team score aggregation
-- [ ] Implement team chat (text or voice signaling)
+- [ ] Implement team chat (text & fast emoji)
 
 ### 3.3 Free For All Mode
 

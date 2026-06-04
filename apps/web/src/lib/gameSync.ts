@@ -29,7 +29,7 @@ export type GameSyncCallbacks = {
     winnerName: string;
   }) => void;
   onPowerUpUsed?: (data: { userId: string; powerUpType: string; targetUserId?: string }) => void;
-  onChatMessage?: (data: { userId: string; username: string; message: string }) => void;
+  onChatMessage?: (data: { userId: string; username: string; message: string; teamId?: string | null }) => void;
 };
 
 export class GameSyncService {
@@ -39,7 +39,7 @@ export class GameSyncService {
   private isHost: boolean = false;
   private channel: RealtimeChannel | null = null;
   private callbacks: GameSyncCallbacks = {};
-  private activeParticipants: Participant[] = [];
+  public activeParticipants: Participant[] = [];
   
   // Local timer state for round ticking
   private roundTimer: NodeJS.Timeout | null = null;
@@ -845,7 +845,7 @@ export class GameSyncService {
   /**
    * Action: Chat Message Broadcast
    */
-  public sendChatMessage(message: string) {
+  public sendChatMessage(message: string, teamId: string | null = null) {
     if (this.channel) {
       this.channel.send({
         type: "broadcast",
@@ -854,6 +854,7 @@ export class GameSyncService {
           userId: this.userId,
           username: this.username,
           message,
+          teamId,
         },
       });
     }

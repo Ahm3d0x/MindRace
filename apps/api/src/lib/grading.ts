@@ -43,7 +43,10 @@ export async function gradeAnswer(question: Question, submission: any): Promise<
   const correctAnswer = question.correctAnswer || (question as any).correct_answer;
   const explanation = question.explanation || '';
   
-  const needsCorrectAnswer = question.type !== 'MATCHING_QUESTION' && question.type !== 'CODING_QUESTION';
+  const needsCorrectAnswer = 
+    question.type !== 'MATCHING_QUESTION' && 
+    question.type !== 'CODING_QUESTION' && 
+    question.type !== 'ORDERING_QUESTION';
   if (needsCorrectAnswer && (correctAnswer === undefined || correctAnswer === null)) {
     return {
       isCorrect: false,

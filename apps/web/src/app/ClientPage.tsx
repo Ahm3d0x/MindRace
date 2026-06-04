@@ -629,13 +629,13 @@ export default function ClientPage() {
     }
   }, [user, loading, router]);
 
-  // Health check polling
+  // Health check polling for Supabase DB
   useEffect(() => {
-    const checkApi = async () => {
+    const checkSupabase = async () => {
       const startTime = Date.now();
       try {
-        const res = await fetch(`${API_URL}/api/v1/health`);
-        if (res.ok) {
+        const { error } = await supabase.from('profiles').select('id').limit(1);
+        if (!error) {
           setApiStatus('online');
           setLatency(Date.now() - startTime);
         } else {
@@ -647,8 +647,8 @@ export default function ClientPage() {
       }
     };
 
-    checkApi();
-    const interval = setInterval(checkApi, 5000);
+    checkSupabase();
+    const interval = setInterval(checkSupabase, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -662,14 +662,23 @@ export default function ClientPage() {
     };
   }, []);
 
-  // Sync connection status based on room status
+  // Sync connection status based on Supabase Realtime connectivity status
   useEffect(() => {
-    if (currentRoom && gameSyncRef.current) {
-      setSocketStatus('connected');
-    } else {
-      setSocketStatus('disconnected');
-    }
-  }, [currentRoom]);
+    const channel = supabase.channel('global-ping');
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        setSocketStatus('connected');
+      } else if (status === 'CHANNEL_ERROR' || status === 'CLOSED') {
+        setSocketStatus('disconnected');
+      } else {
+        setSocketStatus('connecting');
+      }
+    });
+
+    return () => {
+      channel.unsubscribe();
+    };
+  }, []);
 
   // Handle Game Timer Tick (Only in local solo modes)
   useEffect(() => {
@@ -1378,10 +1387,10 @@ export default function ClientPage() {
                       {user.rank}
                     </div>
                     <div style={styles.latencyLabel}>
-                      API: <span style={{ color: apiStatus === 'online' ? '#00ff87' : '#ff3b5c' }}>
+                      DB: <span style={{ color: apiStatus === 'online' ? '#00ff87' : '#ff3b5c' }}>
                         {apiStatus === 'online' ? `${latency}ms` : 'offline'}
                       </span>
-                      {' | '} Socket: <span style={{ color: socketStatus === 'connected' ? '#00f2fe' : '#ff3b5c' }}>
+                      {' | '} Realtime: <span style={{ color: socketStatus === 'connected' ? '#00f2fe' : '#ff3b5c' }}>
                         {socketStatus}
                       </span>
                     </div>

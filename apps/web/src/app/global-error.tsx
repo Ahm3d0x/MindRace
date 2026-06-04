@@ -1,6 +1,8 @@
 'use client';
 
-import React from 'react';
+// Force dynamic to prevent Next.js from attempting static prerendering of this page,
+// which fails in certain Vercel environments due to React hooks dispatcher being null.
+export const dynamic = 'force-dynamic';
 
 export default function GlobalError({
   error,

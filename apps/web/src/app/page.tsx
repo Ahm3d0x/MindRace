@@ -1,8 +1,6 @@
-'use server';
-
 import React from 'react';
 import ClientPage from './ClientPage';
 
-export default async function Page() {
+export default function Page() {
   return <ClientPage />;
 }

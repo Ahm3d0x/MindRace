@@ -181,7 +181,7 @@ router.get('/', requireAuth as any, async (req: AuthenticatedRequest, res: Respo
     }
 
     const isStaff = !!(req.profile?.isAdmin || req.profile?.isTeacher);
-    const sanitized = (questions || []).map((q) => sanitizeQuestion(q, isStaff));
+    const sanitized = (questions || []).map((q: any) => sanitizeQuestion(q, isStaff));
 
     return res.json(sanitized);
   } catch (err) {

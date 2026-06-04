@@ -301,7 +301,7 @@ router.post('/:roomId/leave', requireAuth as any, async (req: AuthenticatedReque
     }
 
     // If host left, reassign host status to another participant
-    const hostStillPresent = remaining.some((r) => r.is_host);
+    const hostStillPresent = remaining.some((r: any) => r.is_host);
     if (!hostStillPresent) {
       const newHostId = remaining[0].user_id;
       

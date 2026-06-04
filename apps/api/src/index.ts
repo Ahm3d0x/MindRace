@@ -538,7 +538,7 @@ io.on('connection', (socket) => {
           .eq('is_spectator', false);
 
         if (members) {
-          members.forEach((m) => {
+          members.forEach((m: any) => {
             match.scores[m.user_id] = 0;
           });
         }
@@ -669,7 +669,7 @@ io.on('connection', (socket) => {
           }
           await supabaseAdmin.from('rooms').delete().eq('id', roomId);
         } else {
-          const hostStillPresent = remaining.some((r) => r.is_host);
+          const hostStillPresent = remaining.some((r: any) => r.is_host);
           if (!hostStillPresent) {
             const newHostId = remaining[0].user_id;
             await supabaseAdmin.from('rooms').update({ host_id: newHostId }).eq('id', roomId);

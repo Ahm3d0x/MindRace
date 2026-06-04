@@ -239,6 +239,8 @@ export default function ClientPage() {
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const [socketStatus, setSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [latency, setLatency] = useState<number | null>(null);
+  const [viewingLeaderboard, setViewingLeaderboard] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
   // Configuration and Room States
   const [selectedMode, setSelectedMode] = useState<GameModeType>('FREE_FOR_ALL');
@@ -483,15 +485,35 @@ export default function ClientPage() {
     const coinsEarned = Math.floor(score / 10);
     const updatedCoins = user.coins + coinsEarned;
     
+    let updatedRankPoints = user.rankPoints;
+    const nextStats: any = { ...user.stats };
+
+    if (gameMode === 'TIMED_CHALLENGE') {
+      updatedRankPoints = user.rankPoints + score;
+    } else if (gameMode === 'DAILY_CHALLENGE') {
+      const todayDateStr = new Date().toISOString().split('T')[0];
+      nextStats.lastDailyChallengeCompleted = todayDateStr;
+      updatedRankPoints = user.rankPoints + score;
+    } else if (gameMode === 'SURVIVAL') {
+      const reachedLevel = currentQIndex + (isAnswerCorrect ? 1 : 0);
+      const currentBest = (user.stats as any).bestSurvivalLevel || 0;
+      nextStats.lastSurvivalLevel = reachedLevel;
+      nextStats.bestSurvivalLevel = Math.max(currentBest, reachedLevel);
+    }
+
     try {
       await supabase
         .from('profiles')
-        .update({ coins: updatedCoins })
+        .update({ 
+          coins: gameMode === 'DAILY_CHALLENGE' ? updatedCoins + 50 : updatedCoins,
+          rank_points: updatedRankPoints,
+          stats: nextStats
+        })
         .eq('id', user.id);
         
       refreshProfile(); // Refresh profile state inside auth cleanly
     } catch (e) {
-      console.log('Error saving coins:', e);
+      console.log('Error saving user rewards:', e);
     }
   }
 
@@ -653,6 +675,11 @@ export default function ClientPage() {
   // Handle Game Timer Tick (Only in local solo modes)
   useEffect(() => {
     if (screen !== 'game' || answerSubmitted || currentRoom) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      return;
+    }
+
+    if (gameMode === 'PRACTICE') {
       if (timerRef.current) clearInterval(timerRef.current);
       return;
     }
@@ -857,7 +884,22 @@ export default function ClientPage() {
   // ==========================================
   // Game Board Operations
   // ==========================================
-  const startSoloGame = (mode: GameModeType) => {
+  const loadLeaderboardData = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('username, rank, rank_points, coins, stats')
+        .order('rank_points', { ascending: false })
+        .limit(10);
+      if (!error && data) {
+        setLeaderboard(data);
+      }
+    } catch (e) {
+      console.error('Error fetching leaderboard:', e);
+    }
+  };
+
+  const startSoloGame = async (mode: GameModeType) => {
     playSFX('slam');
     setGameMode(mode);
     setScore(0);
@@ -865,8 +907,47 @@ export default function ClientPage() {
     setLives(3);
     setCorrectAnswersCount(0);
     setAnswerSubmitted(false);
-    setGameQuestions(SAMPLE_QUESTIONS);
-    
+
+    let questionsToLoad = SAMPLE_QUESTIONS;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const endpoint = mode === 'DAILY_CHALLENGE'
+        ? 'http://localhost:5000/api/v1/questions/daily'
+        : `http://localhost:5000/api/v1/questions?limit=${mode === 'SURVIVAL' ? 20 : 10}`;
+        
+      const res = await fetch(endpoint, {
+        headers: {
+          'Authorization': `Bearer ${session?.access_token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.length > 0) {
+          questionsToLoad = data.map((q: any) => ({
+            id: q.id,
+            type: q.type,
+            category: q.category,
+            body: q.body,
+            imageUrl: q.image_url || q.imageUrl,
+            options: q.options,
+            correctAnswer: q.correct_answer || q.correctAnswer,
+            orderingItems: q.ordering_items || q.orderingItems,
+            matchingPairs: q.matching_pairs || q.matchingPairs,
+            codingTestCases: q.coding_test_cases || q.codingTestCases,
+            difficulty: q.difficulty,
+            rating: Number(q.rating || 0),
+            explanation: q.explanation
+          }));
+          if (mode !== 'DAILY_CHALLENGE') {
+            questionsToLoad.sort(() => Math.random() - 0.5);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching questions:', e);
+    }
+
+    setGameQuestions(questionsToLoad);
     setScreen('cinematic');
   };
 
@@ -888,6 +969,7 @@ export default function ClientPage() {
     playSFX('buzz');
     triggerVibrate(150);
     setIsBuzzed(true);
+    setBuzzedUser(user?.username || 'Player');
     setTimeLeft(10);
   };
 
@@ -1088,129 +1170,237 @@ export default function ClientPage() {
         {/* SCREEN: HOME DASHBOARD */}
         {screen === 'dashboard' && (
           <div style={styles.screenContainer}>
-            <div style={styles.topProfileBar}>
-              <div style={styles.avatarGroup}>
-                <div style={{
-                  ...styles.avatarRing,
-                  borderColor: `var(--color-${user.rank.toLowerCase().replace(' ', '')})`
-                }}>
-                  👤
+            {viewingLeaderboard ? (
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px' }}>
+                    <button style={styles.backBtn} onClick={() => setViewingLeaderboard(false)}>◀</button>
+                    <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff' }}>
+                      {isRtl ? 'لوحة الصدارة العالمية' : 'Global Leaderboard'}
+                    </h2>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', maxHeight: '420px', paddingRight: '4px' }}>
+                    {leaderboard.map((player, index) => {
+                      const isSelf = player.username === user?.username;
+                      const badgeColors = ['#ffd700', '#c0c0c0', '#cd7f32'];
+                      return (
+                        <div 
+                          key={player.username}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '10px 14px',
+                            backgroundColor: isSelf ? 'rgba(0, 242, 254, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                            border: `1px solid ${isSelf ? '#00f2fe' : 'rgba(255, 255, 255, 0.04)'}`,
+                            borderRadius: '8px'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ 
+                              fontSize: '1rem', 
+                              fontWeight: 900, 
+                              color: index < 3 ? badgeColors[index] : '#8a93c0',
+                              width: '24px',
+                              textAlign: 'center'
+                            }}>
+                              {index + 1}
+                            </span>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>
+                                {player.username} {isSelf && `(${isRtl ? 'أنت' : 'You'})`}
+                              </span>
+                              <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                                {player.rank}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                            <span style={{ fontSize: '0.95rem', fontWeight: 800, color: '#00f2fe' }} className="text-glow-accent">
+                              {player.rank_points || player.rankPoints || 0} RP
+                            </span>
+                            {player.stats?.bestSurvivalLevel && (
+                              <span style={{ fontSize: '0.65rem', color: '#ffb300' }}>
+                                🔥 {isRtl ? 'أفضل بقاء:' : 'Survival Best:'} Lvl {player.stats.bestSurvivalLevel}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div style={styles.levelBadge}>
-                  {t.level} 12
-                </div>
-                <div style={styles.xpTrack}>
-                  <div style={styles.xpBarFill}></div>
-                </div>
-              </div>
 
-              <div style={styles.topRightControls}>
-                <span style={styles.walletCount}>🪙 {user.coins}</span>
-                <button style={styles.langBtn} onClick={() => { playSFX('click'); setIsRtl(!isRtl); }}>
-                  {isRtl ? 'EN' : 'عربي'}
-                </button>
-                <button style={styles.logoutBtn} onClick={() => { playSFX('click'); signOut(); }}>
-                  🚪
-                </button>
-              </div>
-            </div>
-
-            <div style={styles.rankBadgeCard}>
-              <div style={styles.rankGlowText} className="text-glow">
-                {user.rank}
-              </div>
-              <div style={styles.latencyLabel}>
-                API: <span style={{ color: apiStatus === 'online' ? '#00ff87' : '#ff3b5c' }}>
-                  {apiStatus === 'online' ? `${latency}ms` : 'offline'}
-                </span>
-                {' | '} Socket: <span style={{ color: socketStatus === 'connected' ? '#00f2fe' : '#ff3b5c' }}>
-                  {socketStatus}
-                </span>
-              </div>
-            </div>
-
-            <div style={styles.titleWrapper}>
-              <h1 style={styles.glowTitle} className="text-glow">{t.title}</h1>
-            </div>
-
-            <div style={styles.playHeroContainer}>
-              <button 
-                style={styles.playHeroBtn} 
-                onClick={() => startSoloGame('TIMED_CHALLENGE')}
-                className="animate-float"
-              >
-                {t.play}
-              </button>
-            </div>
-
-            <div style={styles.modesContainer}>
-              <div style={styles.modeCard} onClick={() => startSoloGame('PRACTICE')}>
-                <span style={styles.modeIcon}>⚗️</span>
-                <div style={styles.modeMeta}>
-                  <h4 style={styles.modeTitle}>{t.soloPractice}</h4>
-                  <p style={styles.modeDesc}>{t.soloPracticeDesc}</p>
+                <div style={styles.bottomNavMock}>
+                  <span style={{ cursor: 'pointer' }} onClick={() => setViewingLeaderboard(false)}>🎒</span>
+                  <span>🛒</span>
+                  <span>⚔️</span>
+                  <span>🏰</span>
+                  <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={loadLeaderboardData}>🏆</span>
                 </div>
               </div>
+            ) : (() => {
+              const todayDateStr = new Date().toISOString().split('T')[0];
+              const isDailyCompleted = (user.stats as any)?.lastDailyChallengeCompleted === todayDateStr;
 
-              <div style={styles.modeCard} onClick={() => startSoloGame('SURVIVAL')}>
-                <span style={styles.modeIcon}>❤️</span>
-                <div style={styles.modeMeta}>
-                  <h4 style={styles.modeTitle}>{t.survivalMode}</h4>
-                  <p style={styles.modeDesc}>{t.survivalModeDesc}</p>
-                </div>
-              </div>
-            </div>
+              return (
+                <>
+                  <div style={styles.topProfileBar}>
+                    <div style={styles.avatarGroup}>
+                      <div style={{
+                        ...styles.avatarRing,
+                        borderColor: `var(--color-${user.rank.toLowerCase().replace(' ', '')})`
+                      }}>
+                        👤
+                      </div>
+                      <div style={styles.levelBadge}>
+                        {t.level} 12
+                      </div>
+                      <div style={styles.xpTrack}>
+                        <div style={styles.xpBarFill}></div>
+                      </div>
+                    </div>
 
-            <div style={styles.multiplayerBox}>
-              <h3 style={styles.multiTitle}>{t.multiplayer}</h3>
-              <p style={styles.multiDesc}>{t.multiplayerDesc}</p>
-              
-              <div style={styles.btnRow}>
-                <button style={styles.cyberBtn} onClick={createRoom}>
-                  {t.createRoomBtn}
-                </button>
-              </div>
+                    <div style={styles.topRightControls}>
+                      <span style={styles.walletCount}>🪙 {user.coins}</span>
+                      <button style={styles.langBtn} onClick={() => { playSFX('click'); setIsRtl(!isRtl); }}>
+                        {isRtl ? 'EN' : 'عربي'}
+                      </button>
+                      <button style={styles.logoutBtn} onClick={() => { playSFX('click'); signOut(); }}>
+                        🚪
+                      </button>
+                    </div>
+                  </div>
 
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                marginBottom: '10px',
-                fontSize: '0.8rem',
-                color: '#8a93c0',
-                cursor: 'pointer'
-              }} onClick={() => setIsSpectatorJoin(!isSpectatorJoin)}>
-                <input
-                  type="checkbox"
-                  checked={isSpectatorJoin}
-                  onChange={(e) => setIsSpectatorJoin(e.target.checked)}
-                  style={{ cursor: 'pointer' }}
-                />
-                <span>{isRtl ? 'الانضمام كمتفرج (رؤية فقط)' : 'Join as Spectator (Watch only)'}</span>
-              </div>
+                  <div style={styles.rankBadgeCard}>
+                    <div style={styles.rankGlowText} className="text-glow">
+                      {user.rank}
+                    </div>
+                    <div style={styles.latencyLabel}>
+                      API: <span style={{ color: apiStatus === 'online' ? '#00ff87' : '#ff3b5c' }}>
+                        {apiStatus === 'online' ? `${latency}ms` : 'offline'}
+                      </span>
+                      {' | '} Socket: <span style={{ color: socketStatus === 'connected' ? '#00f2fe' : '#ff3b5c' }}>
+                        {socketStatus}
+                      </span>
+                    </div>
+                  </div>
 
-              <div style={styles.inputJointRow}>
-                <input 
-                  style={styles.jointInput} 
-                  type="text" 
-                  placeholder={t.enterCode}
-                  value={roomCodeInput}
-                  onChange={(e) => setRoomCodeInput(e.target.value)}
-                />
-                <button style={styles.cyberOutlineBtn} onClick={joinRoomByCode}>
-                  {t.joinRoomBtn}
-                </button>
-              </div>
-            </div>
+                  <div style={styles.titleWrapper}>
+                    <h1 style={styles.glowTitle} className="text-glow">{t.title}</h1>
+                  </div>
 
-            <div style={styles.bottomNavMock}>
-              <span style={styles.activeNavTab}>🎒</span>
-              <span>🛒</span>
-              <span>⚔️</span>
-              <span>🏰</span>
-              <span>🏆</span>
-            </div>
+                  <div style={styles.playHeroContainer}>
+                    <button 
+                      style={styles.playHeroBtn} 
+                      onClick={() => startSoloGame('TIMED_CHALLENGE')}
+                      className="animate-float"
+                    >
+                      {t.play}
+                    </button>
+                  </div>
+
+                  <div style={styles.modesContainer}>
+                    <div style={styles.modeCard} onClick={() => startSoloGame('PRACTICE')}>
+                      <span style={styles.modeIcon}>⚗️</span>
+                      <div style={styles.modeMeta}>
+                        <h4 style={styles.modeTitle}>{t.soloPractice}</h4>
+                        <p style={styles.modeDesc}>{t.soloPracticeDesc}</p>
+                      </div>
+                    </div>
+
+                    <div style={styles.modeCard} onClick={() => startSoloGame('SURVIVAL')}>
+                      <span style={styles.modeIcon}>❤️</span>
+                      <div style={styles.modeMeta}>
+                        <h4 style={styles.modeTitle}>{t.survivalMode}</h4>
+                        <p style={styles.modeDesc}>{t.survivalModeDesc}</p>
+                      </div>
+                    </div>
+
+                    <div 
+                      style={{
+                        ...styles.modeCard,
+                        opacity: isDailyCompleted ? 0.75 : 1,
+                        borderColor: isDailyCompleted ? '#00ff87' : 'rgba(255, 255, 255, 0.04)'
+                      }} 
+                      onClick={() => {
+                        if (isDailyCompleted) {
+                          alert(isRtl ? 'لقد أنجزت هذا التحدي اليوم بالفعل!' : 'You have already completed this challenge today!');
+                          return;
+                        }
+                        startSoloGame('DAILY_CHALLENGE');
+                      }}
+                    >
+                      <span style={styles.modeIcon}>📅</span>
+                      <div style={styles.modeMeta}>
+                        <h4 style={styles.modeTitle}>
+                          {isRtl ? 'التحدي اليومي' : 'Daily Challenge'}
+                          {isDailyCompleted && <span style={{ color: '#00ff87', marginLeft: '6px', fontSize: '0.8rem' }}>✓</span>}
+                        </h4>
+                        <p style={styles.modeDesc}>
+                          {isDailyCompleted 
+                            ? (isRtl ? 'تم إنجازه بنجاح! +50 🪙 مكافأة' : 'Successfully completed! +50 🪙 bonus')
+                            : (isRtl ? 'تحدي يومي فريد بنفس الأسئلة للجميع ومكافأة مضاعفة' : 'Unique daily challenge with double rewards')}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={styles.multiplayerBox}>
+                    <h3 style={styles.multiTitle}>{t.multiplayer}</h3>
+                    <p style={styles.multiDesc}>{t.multiplayerDesc}</p>
+                    
+                    <div style={styles.btnRow}>
+                      <button style={styles.cyberBtn} onClick={createRoom}>
+                        {t.createRoomBtn}
+                      </button>
+                    </div>
+
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      marginBottom: '10px',
+                      fontSize: '0.8rem',
+                      color: '#8a93c0',
+                      cursor: 'pointer'
+                    }} onClick={() => setIsSpectatorJoin(!isSpectatorJoin)}>
+                      <input
+                        type="checkbox"
+                        checked={isSpectatorJoin}
+                        onChange={(e) => setIsSpectatorJoin(e.target.checked)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      <span>{isRtl ? 'الانضمام كمتفرج (رؤية فقط)' : 'Join as Spectator (Watch only)'}</span>
+                    </div>
+
+                    <div style={styles.inputJointRow}>
+                      <input 
+                        style={styles.jointInput} 
+                        type="text" 
+                        placeholder={t.enterCode}
+                        value={roomCodeInput}
+                        onChange={(e) => setRoomCodeInput(e.target.value)}
+                      />
+                      <button style={styles.cyberOutlineBtn} onClick={joinRoomByCode}>
+                        {t.joinRoomBtn}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={styles.bottomNavMock}>
+                    <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={() => setViewingLeaderboard(false)}>🎒</span>
+                    <span>🛒</span>
+                    <span>⚔️</span>
+                    <span>🏰</span>
+                    <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -1632,10 +1822,10 @@ export default function ClientPage() {
                 <div style={styles.hudTimerPanel}>
                   <div style={{
                     ...styles.timerCircularRing,
-                    borderColor: timeLeft <= 5 ? '#ff3b5c' : '#00f2fe',
-                    animation: timeLeft <= 5 ? 'pulse-glow 0.5s infinite' : 'none'
+                    borderColor: gameMode === 'PRACTICE' ? '#8a93c0' : timeLeft <= 5 ? '#ff3b5c' : '#00f2fe',
+                    animation: (gameMode !== 'PRACTICE' && timeLeft <= 5) ? 'pulse-glow 0.5s infinite' : 'none'
                   }}>
-                    {timeLeft}
+                    {gameMode === 'PRACTICE' ? '∞' : timeLeft}
                   </div>
                   <span style={styles.hudRoundCounter}>{t.round} {currentQIndex + 1}/{gameQuestions.length}</span>
                 </div>

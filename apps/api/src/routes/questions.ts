@@ -51,6 +51,84 @@ router.get('/', requireAuth as any, async (req: AuthenticatedRequest, res: Respo
   }
 });
 
+// 1.5. Get Daily Challenge questions (deterministic calendar seed)
+router.get('/daily', requireAuth as any, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { data: questions, error } = await supabaseAdmin
+      .from('questions')
+      .select('*');
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    if (!questions || questions.length === 0) {
+      // Fallback sample questions
+      const fallbackQs = [
+        {
+          id: 'q1_daily',
+          type: 'MULTIPLE_CHOICE',
+          category: 'Science / العلوم',
+          body: 'Which element has the highest thermal conductivity of any natural material?\nأي العناصر التالية يمتلك أعلى موصلية حرارية بين المواد الطبيعية؟',
+          options: [
+            { id: 'a', text: 'Silver / الفضة' },
+            { id: 'b', text: 'Copper / النحاس' },
+            { id: 'c', text: 'Diamond / الماس' },
+            { id: 'd', text: 'Gold / الذهب' }
+          ],
+          difficulty: 'Medium',
+          explanation: 'Diamond has a thermal conductivity five times higher than copper.\nالماس يمتلك موصلية حرارية تفوق النحاس بخمسة أضعاف.',
+          correct_answer: 'c',
+          rating: 4.8
+        },
+        {
+          id: 'q2_daily',
+          type: 'TRUE_FALSE',
+          category: 'Physics / الفيزياء',
+          body: 'Sound waves travel faster in water than in air.\nتنتقل الموجات الصوتية في الماء بسرعة أكبر من انتقالها في الهواء.',
+          difficulty: 'Easy',
+          explanation: 'Because water is denser than air, sound travels about 4.3 times faster in it.\nلأن الماء أكثر كثافة من الهواء، ينتقل الصوت فيه بسرعة أكبر بنحو 4.3 أضعاف.',
+          correct_answer: 'true',
+          rating: 4.5
+        },
+        {
+          id: 'q3_daily',
+          type: 'FILL_IN_THE_BLANK',
+          category: 'Math / الرياضيات',
+          body: 'What is the value of Pi rounded to two decimal places?\nما هي قيمة ثابت بّاي (Pi) مقربة لعددين عشريين؟',
+          difficulty: 'Easy',
+          explanation: 'Pi is approximately 3.14159..., which rounds to 3.14.\nثابت باي هو تقريباً 3.14159... والذي يقرب إلى 3.14.',
+          correct_answer: '3.14',
+          rating: 4.2
+        }
+      ];
+      return res.json(fallbackQs);
+    }
+
+    // Determine deterministic seed based on current date string YYYY-MM-DD
+    const todayStr = new Date().toISOString().split('T')[0];
+    let seed = 0;
+    for (let i = 0; i < todayStr.length; i++) {
+      seed += todayStr.charCodeAt(i);
+    }
+
+    const dailyQuestions = [];
+    const count = questions.length;
+    for (let i = 0; i < Math.min(5, count); i++) {
+      const index = (seed + i * 7) % count;
+      dailyQuestions.push(questions[index]);
+    }
+
+    const isStaff = !!(req.profile?.isAdmin || req.profile?.isTeacher);
+    const sanitized = dailyQuestions.map((q) => sanitizeQuestion(q, isStaff));
+
+    return res.json(sanitized);
+  } catch (err) {
+    console.error('Daily challenge endpoint error:', err);
+    return res.status(500).json({ error: 'Internal server error getting daily challenge' });
+  }
+});
+
 // 2. Get single question
 router.get('/:id', requireAuth as any, async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;

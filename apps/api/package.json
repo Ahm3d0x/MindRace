@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc",
+    "build": "npm run build --prefix ../../packages/shared && tsc",
     "start": "node dist/index.js"
   },
   "dependencies": {

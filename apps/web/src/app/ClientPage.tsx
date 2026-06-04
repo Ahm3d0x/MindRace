@@ -2308,14 +2308,16 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'space-between',
-    boxSizing: 'border-box'
+    boxSizing: 'border-box',
+    minHeight: 0
   },
   topProfileBar: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     height: '52px',
-    marginBottom: '10px'
+    marginBottom: '10px',
+    flexShrink: 0
   },
   avatarGroup: {
     display: 'flex',
@@ -2387,7 +2389,8 @@ const styles: { [key: string]: React.CSSProperties } = {
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
     border: '1px solid rgba(255, 255, 255, 0.04)',
     borderRadius: '8px',
-    marginBottom: '20px'
+    marginBottom: '20px',
+    flexShrink: 0
   },
   rankGlowText: {
     fontSize: '1.2rem',
@@ -2403,7 +2406,8 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   titleWrapper: {
     textAlign: 'center',
-    margin: '10px 0'
+    margin: '10px 0',
+    flexShrink: 0
   },
   glowTitle: {
     fontSize: '2.2rem',
@@ -2416,7 +2420,8 @@ const styles: { [key: string]: React.CSSProperties } = {
   playHeroContainer: {
     display: 'flex',
     justifyContent: 'center',
-    margin: '20px 0'
+    margin: '20px 0',
+    flexShrink: 0
   },
   playHeroBtn: {
     width: '180px',
@@ -2532,7 +2537,8 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderTop: '1px solid rgba(255, 255, 255, 0.05)',
     paddingTop: '10px',
     fontSize: '1.3rem',
-    color: '#8a93c0'
+    color: '#8a93c0',
+    flexShrink: 0
   },
   activeNavTab: {
     color: '#00f2fe',

@@ -46,6 +46,7 @@ export class GameSyncService {
   private roundTimeLimit: number = 30;
   private roundTimeLeft: number = 30;
   private roundStartedAt: string | null = null;
+  private roomStatus: string = "WAITING";
 
   constructor(roomId: string, userId: string, username: string, isHost: boolean) {
     this.roomId = roomId;
@@ -53,6 +54,7 @@ export class GameSyncService {
     this.username = username;
     this.isHost = isHost;
   }
+
 
   /**
    * Set callback hooks for game events
@@ -66,6 +68,21 @@ export class GameSyncService {
    */
   public async connect() {
     console.log(`[GameSync] Connecting to room ${this.roomId}...`);
+
+    // Fetch initial room status
+    try {
+      const { data: roomData } = await supabase
+        .from("rooms")
+        .select("status")
+        .eq("id", this.roomId)
+        .maybeSingle();
+      if (roomData) {
+        this.roomStatus = roomData.status;
+      }
+    } catch (e) {
+      console.warn("[GameSync] Could not fetch initial room status:", e);
+    }
+
 
     // 1. Create a channel for this specific room
     const channelName = `room_channel:${this.roomId}`;
@@ -130,11 +147,13 @@ export class GameSyncService {
           }
 
           // Game start / status transition to ACTIVE
-          if (payload.old?.status === "WAITING" && room.status === "ACTIVE") {
+          if ((payload.old?.status === "WAITING" || this.roomStatus === "WAITING") && room.status === "ACTIVE") {
+            this.roomStatus = "ACTIVE";
             if (this.callbacks.onGameStart) {
               this.callbacks.onGameStart({ roomId: this.roomId });
             }
           }
+
 
           // Host change or current round index changes
           if (room.host_id === this.userId) {

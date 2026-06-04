@@ -482,28 +482,7 @@ export default function ClientPage() {
     }
 
     try {
-      let isCorrect = false;
-
-      if (apiStatus === 'online') {
-        const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch(`${API_URL}/api/v1/questions/${q.id}/grade`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session?.access_token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ answer: userAns })
-        });
-
-        if (res.ok) {
-          const grading = await res.json();
-          isCorrect = grading.isCorrect;
-        } else {
-          isCorrect = evaluateLocalAnswer(q, userAns);
-        }
-      } else {
-        isCorrect = evaluateLocalAnswer(q, userAns);
-      }
+      const isCorrect = evaluateLocalAnswer(q, userAns);
 
       setIsAnswerCorrect(isCorrect);
       setAnswerSubmitted(true);
@@ -1020,37 +999,35 @@ export default function ClientPage() {
 
     let questionsToLoad = SAMPLE_QUESTIONS;
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const endpoint = mode === 'DAILY_CHALLENGE'
-        ? `${API_URL}/api/v1/questions/daily`
-        : `${API_URL}/api/v1/questions?limit=${mode === 'SURVIVAL' ? 20 : 10}`;
-        
-      const res = await fetch(endpoint, {
-        headers: {
-          'Authorization': `Bearer ${session?.access_token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.length > 0) {
-          questionsToLoad = data.map((q: any) => ({
-            id: q.id,
-            type: q.type,
-            category: q.category,
-            body: q.body,
-            imageUrl: q.image_url || q.imageUrl,
-            options: q.options,
-            correctAnswer: q.correct_answer || q.correctAnswer,
-            orderingItems: q.ordering_items || q.orderingItems,
-            matchingPairs: q.matching_pairs || q.matchingPairs,
-            codingTestCases: q.coding_test_cases || q.codingTestCases,
-            difficulty: q.difficulty,
-            rating: Number(q.rating || 0),
-            explanation: q.explanation
-          }));
-          if (mode !== 'DAILY_CHALLENGE') {
-            questionsToLoad.sort(() => Math.random() - 0.5);
-          }
+      let query = supabase.from('questions').select('*');
+      if (mode !== 'DAILY_CHALLENGE') {
+        query = query.limit(mode === 'SURVIVAL' ? 20 : 10);
+      } else {
+        query = query.limit(10);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.error('Error fetching questions from Supabase:', error);
+      } else if (data && data.length > 0) {
+        questionsToLoad = data.map((q: any) => ({
+          id: q.id,
+          type: q.type,
+          category: q.category,
+          body: q.body,
+          imageUrl: q.image_url || q.imageUrl,
+          options: q.options,
+          correctAnswer: q.correct_answer || q.correctAnswer,
+          orderingItems: q.ordering_items || q.orderingItems,
+          matchingPairs: q.matching_pairs || q.matchingPairs,
+          codingTestCases: q.coding_test_cases || q.codingTestCases,
+          difficulty: q.difficulty,
+          rating: Number(q.rating || 0),
+          explanation: q.explanation,
+          createdAt: q.created_at ? new Date(q.created_at) : new Date()
+        }));
+        if (mode !== 'DAILY_CHALLENGE') {
+          questionsToLoad.sort(() => Math.random() - 0.5);
         }
       }
     } catch (e) {

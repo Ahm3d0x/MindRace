@@ -26,6 +26,8 @@ const allowedOrigins = [
 const isOriginAllowed = (origin: string | undefined): boolean => {
   if (!origin) return true; // Direct requests, server-to-server
   if (allowedOrigins.includes(origin)) return true;
+  // Allow Vercel preview/production deployments
+  if (origin.startsWith('https://') && origin.endsWith('.vercel.app')) return true;
   // Allow any port on localhost or 127.0.0.1 for local development
   if (/^http:\/\/localhost:\d+$/.test(origin)) return true;
   if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return true;

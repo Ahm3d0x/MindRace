@@ -32,6 +32,7 @@ export type GameSyncCallbacks = {
   onPowerUpUsed?: (data: { userId: string; powerUpType: string; targetUserId?: string }) => void;
   onChatMessage?: (data: { userId: string; username: string; message: string; teamId?: string | null }) => void;
   onAnswerSubmitted?: (data: { id: string; round_id: string; user_id: string; answer: unknown; is_correct: boolean; points_earned: number; time_spent_ms: number }) => void;
+  onAudienceSync?: (audience: { userId: string; username: string; score: number }[]) => void;
 };
 
 export class GameSyncService {
@@ -39,6 +40,7 @@ export class GameSyncService {
   private userId: string;
   private username: string;
   private isHost: boolean = false;
+  private isAudience: boolean = false;
   private channel: RealtimeChannel | null = null;
   private callbacks: GameSyncCallbacks = {};
   public activeParticipants: Participant[] = [];
@@ -51,11 +53,12 @@ export class GameSyncService {
   private roundStartedAt: string | null = null;
   private roomStatus: string = "WAITING";
 
-  constructor(roomId: string, userId: string, username: string, isHost: boolean) {
+  constructor(roomId: string, userId: string, username: string, isHost: boolean, isAudience: boolean = false) {
     this.roomId = roomId;
     this.userId = userId;
     this.username = username;
     this.isHost = isHost;
+    this.isAudience = isAudience;
   }
 
 

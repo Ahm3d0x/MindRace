@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { BuzzerType, GameModeType, Question } from '@mind-race/shared';
+import { BuzzerType, GameModeType, Question, TournamentFormat, GameEvents } from '@mind-race/shared';
 import { GameSyncService } from '../lib/gameSync';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabase';
+import { io, Socket } from 'socket.io-client';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000';
@@ -242,6 +243,20 @@ export default function ClientPage() {
   const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const [socketStatus, setSocketStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [latency, setLatency] = useState<number | null>(null);
+  
+  // Streamer / Audience Spectator States
+  const [isAudienceSpectator, setIsAudienceSpectator] = useState(false);
+  const [audienceNickname, setAudienceNickname] = useState('');
+  const [showNicknameModal, setShowNicknameModal] = useState(false);
+  const [audienceScore, setAudienceScore] = useState(0);
+  const [audienceLeaderboard, setAudienceLeaderboard] = useState<{ userId: string; username: string; score: number }[]>([]);
+  const [spectatorAnswerSubmitted, setSpectatorAnswerSubmitted] = useState(false);
+  const [spectatorIsAnswerCorrect, setSpectatorIsAnswerCorrect] = useState<boolean | null>(null);
+  const [spectatorCorrectAnswer, setSpectatorCorrectAnswer] = useState<unknown>(null);
+  const [spectatorExplanation, setSpectatorExplanation] = useState('');
+  const [spectatorPointsEarned, setSpectatorPointsEarned] = useState(0);
+  const socketRef = useRef<Socket | null>(null);
+
   const [viewingLeaderboard, setViewingLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
 
@@ -283,6 +298,28 @@ export default function ClientPage() {
   }
 
   const [participants, setParticipants] = useState<PlayerParticipant[]>([]);
+
+  // Tournament States
+  const [viewingTournaments, setViewingTournaments] = useState(false);
+  const [tournaments, setTournaments] = useState<any[]>([]);
+  const [selectedTournament, setSelectedTournament] = useState<any>(null);
+  const [loadingTournaments, setLoadingTournaments] = useState(false);
+  const [creatingTournament, setCreatingTournament] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  // Forms state
+  const [tourName, setTourName] = useState('');
+  const [tourDesc, setTourDesc] = useState('');
+  const [tourFormat, setTourFormat] = useState<TournamentFormat>('KNOCKOUT');
+  const [tourSize, setTourSize] = useState<number>(8);
+  const [tourFeeCoins, setTourFeeCoins] = useState<number>(0);
+  const [tourFeeTokens, setTourFeeTokens] = useState<number>(0);
+  const [tourPrizeTokens, setTourPrizeTokens] = useState<number>(10);
+
+  // Tournament visualizer state
+  const [tourActiveRoundTab, setTourActiveRoundTab] = useState<number>(1);
+  const [tourActiveTab, setTourActiveTab] = useState<'bracket' | 'standings' | 'players'>('bracket');
+
   
   interface SoloHistoryItem {
     roundNumber: number;
@@ -402,7 +439,247 @@ export default function ClientPage() {
   // Timers and Refs
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const gameSyncRef = useRef<GameSyncService | null>(null);
-  const activeRoundRef = useRef<any>(null);
+  const activeRoundRef = useRef<{ id: string; started_at: number } | null>(null);
+
+  const connectToSocketServer = (roomCode: string, nickname: string, playerToken?: string) => {
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+    }
+
+    const socketUrl = SOCKET_URL;
+    console.log(`[Socket] Connecting to ${socketUrl} for room ${roomCode}...`);
+
+    const connectionAuth: { token?: string; isAudience?: boolean; username?: string } = {};
+    if (playerToken) {
+      connectionAuth.token = playerToken;
+    } else {
+      connectionAuth.isAudience = true;
+      connectionAuth.username = nickname;
+    }
+
+    const socket = io(socketUrl, {
+      auth: connectionAuth,
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log(`[Socket] Connected to Socket.io server. ID: ${socket.id}`);
+      setSocketStatus('connected');
+      socket.emit(GameEvents.JOIN_ROOM, { roomId: roomCode, username: nickname });
+      
+      // Save joined room code for display
+      setCurrentRoom((prev: unknown) => {
+        if (prev) return prev;
+        return {
+          id: roomCode, // Fallback room ID if spectator
+          code: roomCode,
+          status: 'WAITING',
+          config: { mode: 'FREE_FOR_ALL', roundsCount: 5, questionTimeLimitSeconds: 30, buzzerType: 'STANDARD', allowedPowerUps: [] },
+          participants: []
+        };
+      });
+      setScreen('lobby');
+    });
+
+    socket.on('disconnect', () => {
+      console.log('[Socket] Disconnected from Socket.io server.');
+      setSocketStatus('disconnected');
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('[Socket] Connection error:', err);
+      setSocketStatus('disconnected');
+    });
+
+    // Game lifecycle events for spectators
+    socket.on(GameEvents.START_GAME, () => {
+      playSFX('slam');
+      triggerVibrate([200, 100, 200]);
+      setScreen('cinematic');
+    });
+
+    socket.on('game:round_start', (data: { roundIndex: number; totalRounds: number; question: { id: string; type: string; category: string; body: string; image_url?: string; options?: { id: string; text: string }[]; difficulty: string; explanation?: string }; timeLeft: number; scores: Record<string, number> }) => {
+      console.log('[Socket] Spectator Round Start:', data);
+      setGameMode('FREE_FOR_ALL'); // Match layout style
+      
+      // Clean question format
+      const rawQuestion = data.question;
+      const formattedQ: Question = {
+        id: rawQuestion.id,
+        type: rawQuestion.type as any,
+        category: rawQuestion.category,
+        body: rawQuestion.body,
+        imageUrl: rawQuestion.image_url,
+        options: rawQuestion.options,
+        difficulty: rawQuestion.difficulty as any,
+        explanation: rawQuestion.explanation,
+        rating: 0,
+        createdAt: new Date(),
+      };
+
+      setGameQuestions((prev) => {
+        const list = [...prev];
+        list[data.roundIndex] = formattedQ;
+        return list;
+      });
+
+      setCurrentQIndex(data.roundIndex);
+      setTimeLeft(data.timeLeft);
+      setIsBuzzed(false);
+      setBuzzedUser(null);
+      setSelectedOption(null);
+      setTextAnswer('');
+      setMatchingSelections({});
+      setActiveLeftTerm(null);
+      
+      // Reset spectator specific grading feedback
+      setSpectatorAnswerSubmitted(false);
+      setSpectatorIsAnswerCorrect(null);
+      setSpectatorCorrectAnswer(null);
+      setSpectatorExplanation('');
+      setSpectatorPointsEarned(0);
+
+      // Local countdown timer for spectators
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            return 0;
+          }
+          if (prev <= 6) {
+            playSFX('tick');
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      setScreen('game');
+    });
+
+    socket.on('game:tick', (data: { timeLeft: number }) => {
+      // High-frequency tick. Spectators don't receive this normally (room optimization).
+      // But if they do, we sync it.
+      setTimeLeft(data.timeLeft);
+    });
+
+    socket.on('game:buzzed', (data: { username: string }) => {
+      console.log('[Socket] Buzzer pressed:', data);
+      playSFX('buzz');
+      setIsBuzzed(true);
+      setBuzzedUser(data.username);
+      // Restart local timer at 10 seconds
+      setTimeLeft(10);
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerRef.current!);
+            return 0;
+          }
+          if (prev <= 6) {
+            playSFX('tick');
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    });
+
+    socket.on('game:round_ended', (data: { scores?: Record<string, number>; audienceLeaderboard?: { userId: string; username: string; score: number }[]; correctAnswer: unknown; explanation?: string }) => {
+      console.log('[Socket] Spectator Round Ended:', data);
+      if (timerRef.current) clearInterval(timerRef.current);
+
+      // Save audience leaderboard if present
+      if (data.audienceLeaderboard) {
+        setAudienceLeaderboard(data.audienceLeaderboard);
+      }
+
+      // Sync active player scores if present
+      if (data.scores) {
+        setParticipants((prev) =>
+          prev.map((p) => ({
+            ...p,
+            score: data.scores![p.userId] !== undefined ? data.scores![p.userId] : p.score,
+          }))
+        );
+      }
+
+      // If this client hasn't submitted yet, reveal correct answer
+      setSpectatorCorrectAnswer(data.correctAnswer);
+      setSpectatorExplanation(data.explanation || '');
+      setSpectatorAnswerSubmitted(true);
+    });
+
+    socket.on('game:ended', (data: { scores?: Record<string, number>; audienceLeaderboard?: { userId: string; username: string; score: number }[] }) => {
+      console.log('[Socket] Spectator Game Ended:', data);
+      if (timerRef.current) clearInterval(timerRef.current);
+      
+      if (data.audienceLeaderboard) {
+        setAudienceLeaderboard(data.audienceLeaderboard);
+      }
+
+      // Set up a mock report details for spectators
+      const playerDetails = participants.map((p) => {
+        const pScore = data.scores?.[p.userId] || 0;
+        return {
+          ...p,
+          score: pScore,
+          accuracy: 0,
+          correctCount: 0,
+          totalAnswered: 0,
+        };
+      }).sort((a, b) => b.score - a.score);
+
+      setMatchReportDetails({
+        players: playerDetails,
+        rounds: [],
+        isMultiplayer: true,
+      });
+
+      setScreen('summary');
+    });
+
+    socket.on(GameEvents.AUDIENCE_ANSWER_GRADED, (data: { isCorrect: boolean; pointsEarned: number; correctAnswer: unknown; explanation?: string; score: number }) => {
+      console.log('[Socket] Individual Audience Answer Graded:', data);
+      setSpectatorIsAnswerCorrect(data.isCorrect);
+      setSpectatorPointsEarned(data.pointsEarned);
+      setSpectatorCorrectAnswer(data.correctAnswer);
+      setSpectatorExplanation(data.explanation || '');
+      setAudienceScore(data.score);
+      setSpectatorAnswerSubmitted(true);
+
+      if (data.isCorrect) {
+        playSFX('correct');
+      } else {
+        playSFX('wrong');
+      }
+    });
+  };
+
+  const submitSpectatorAnswer = (ans: unknown) => {
+    if (!currentRoom || !socketRef.current) return;
+    setSpectatorAnswerSubmitted(true);
+    socketRef.current.emit(GameEvents.SUBMIT_AUDIENCE_ANSWER, {
+      roomId: currentRoom.id,
+      answer: ans,
+    });
+  };
+
+  const handleJoinAsAudienceGuest = (nicknameStr: string) => {
+    if (!nicknameStr.trim()) return;
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const room = params.get('room');
+      if (room) {
+        setAudienceNickname(nicknameStr.trim());
+        setShowNicknameModal(false);
+        connectToSocketServer(room, nicknameStr.trim());
+      }
+    }
+  };
 
   const setupGameSyncCallbacks = (sync: GameSyncService) => {
     sync.setCallbacks({
@@ -475,6 +752,9 @@ export default function ClientPage() {
         playSFX('buzz');
         setIsBuzzed(true);
         setBuzzedUser(data.username);
+        if (data.username === user?.username && socketRef.current) {
+          socketRef.current.emit(GameEvents.BUZZ, { roomId: currentRoom?.code });
+        }
       },
       onBuzzerReset: () => {
         setIsBuzzed(false);
@@ -727,6 +1007,13 @@ export default function ClientPage() {
         };
       }
       
+      if (socketRef.current) {
+        socketRef.current.emit(GameEvents.SUBMIT_ANSWER, {
+          roomId: currentRoom.code,
+          answer: finalAns
+        });
+      }
+
       await gameSyncRef.current.submitAnswer(
         activeRoundRef.current.id,
         finalAns,
@@ -888,10 +1175,39 @@ export default function ClientPage() {
   // Redirect if not logged in
   // ==========================================
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('role') === 'audience') {
+        return; // Bypass redirect for stream audience
+      }
+    }
     if (!loading && !user) {
       router.push('/login');
     }
   }, [user, loading, router]);
+
+  // ==========================================
+  // URL Query Detection for Streamer Mode Audience
+  // ==========================================
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const room = params.get('room');
+      const role = params.get('role');
+      if (room && role === 'audience') {
+        setTimeout(() => {
+          setIsAudienceSpectator(true);
+          if (!loading) {
+            if (user) {
+              connectToSocketServer(room, user.username);
+            } else {
+              setShowNicknameModal(true);
+            }
+          }
+        }, 0);
+      }
+    }
+  }, [user, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Health check polling for Supabase DB
   useEffect(() => {
@@ -943,6 +1259,33 @@ export default function ClientPage() {
       channel.unsubscribe();
     };
   }, []);
+
+  // Real-time listener for the active tournament
+  useEffect(() => {
+    if (!selectedTournament) return;
+
+    const channel = supabase
+      .channel(`tournament-detail:${selectedTournament.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'tournaments',
+          filter: `id=eq.${selectedTournament.id}`
+        },
+        (payload) => {
+          console.log('Realtime tournament update:', payload);
+          fetchTournamentDetails(selectedTournament.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [selectedTournament?.id]);
+
 
   // Handle Game Timer Tick (Only in local solo modes)
   useEffect(() => {
@@ -1016,6 +1359,9 @@ export default function ClientPage() {
         gameSyncRef.current = sync;
         setupGameSyncCallbacks(sync);
         await sync.connect();
+
+        const { data: { session } } = await supabase.auth.getSession();
+        connectToSocketServer(roomData.code, user!.username, session?.access_token || undefined);
       } catch (e) {
         console.error(e);
         triggerGamingAlert('Error creating room.', 'error');
@@ -1125,6 +1471,9 @@ export default function ClientPage() {
          gameSyncRef.current = sync;
          setupGameSyncCallbacks(sync);
          await sync.connect();
+
+         const { data: { session } } = await supabase.auth.getSession();
+         connectToSocketServer(room.code, user!.username, session?.access_token || undefined);
        } catch (e) {
          console.error(e);
          triggerGamingAlert('Error joining room.', 'error');
@@ -1283,6 +1632,222 @@ export default function ClientPage() {
        gameSyncRef.current.sendChatMessage(chatInput.trim(), isTeamMode ? myTeamId : null);
        setChatInput('');
      };
+
+  // ==========================================
+  // Tournament API Operations
+  // ==========================================
+  function copyStreamerLink() {
+    if (!currentRoom) return;
+    const link = `${window.location.origin}/?room=${currentRoom.code}&role=audience`;
+    navigator.clipboard.writeText(link);
+    setCopiedLink(true);
+    triggerGamingAlert(isRtl ? 'تم نسخ رابط البث!' : 'Streamer link copied!', 'success');
+    playSFX('click');
+    setTimeout(() => setCopiedLink(false), 2000);
+  }
+
+  async function fetchTournaments() {
+    setLoadingTournaments(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${API_URL}/api/v1/tournaments`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTournaments(data);
+      } else {
+        console.error('Failed to fetch tournaments list');
+      }
+    } catch (e) {
+      console.error('Error fetching tournaments:', e);
+    } finally {
+      setLoadingTournaments(false);
+    }
+  }
+
+  async function fetchTournamentDetails(id: string) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${API_URL}/api/v1/tournaments/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedTournament(data);
+      } else {
+        console.error('Failed to fetch tournament details');
+      }
+    } catch (e) {
+      console.error('Error fetching tournament details:', e);
+    }
+  }
+
+  async function registerForTournament(id: string) {
+    playSFX('click');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${API_URL}/api/v1/tournaments/${id}/register`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (res.ok) {
+        triggerGamingAlert(isRtl ? 'تم التسجيل بنجاح!' : 'Registered successfully!', 'success');
+        await fetchTournamentDetails(id);
+        await refreshProfile();
+      } else {
+        const err = await res.json();
+        triggerGamingAlert(err.error || (isRtl ? 'فشل التسجيل' : 'Registration failed'), 'error');
+      }
+    } catch (e) {
+      console.error('Registration error:', e);
+      triggerGamingAlert(isRtl ? 'حدث خطأ أثناء التسجيل' : 'Error registering for tournament', 'error');
+    }
+  }
+
+  async function handleCreateTournament(e: React.FormEvent) {
+    e.preventDefault();
+    if (!tourName.trim()) {
+      triggerGamingAlert(isRtl ? 'الرجاء إدخال اسم البطولة' : 'Please enter tournament name', 'warning');
+      return;
+    }
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      const res = await fetch(`${API_URL}/api/v1/tournaments`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: tourName,
+          description: tourDesc,
+          format: tourFormat,
+          bracketSize: tourSize,
+          entryFeeCoins: tourFeeCoins,
+          entryFeeTokens: tourFeeTokens,
+          prizePool: { first_place_tokens: tourPrizeTokens }
+        })
+      });
+      if (res.ok) {
+        const created = await res.json();
+        triggerGamingAlert(isRtl ? 'تم إنشاء البطولة بنجاح!' : 'Tournament created successfully!', 'success');
+        setCreatingTournament(false);
+        setTourName('');
+        setTourDesc('');
+        setTourFeeCoins(0);
+        setTourFeeTokens(0);
+        setTourPrizeTokens(10);
+        await fetchTournamentDetails(created.id);
+        await refreshProfile();
+      } else {
+        const err = await res.json();
+        triggerGamingAlert(err.error || (isRtl ? 'فشل إنشاء البطولة' : 'Failed to create tournament'), 'error');
+      }
+    } catch (err) {
+      console.error('Create tournament error:', err);
+      triggerGamingAlert(isRtl ? 'حدث خطأ أثناء إنشاء البطولة' : 'Error hosting tournament', 'error');
+    }
+  }
+
+  async function joinTournamentRoom(matchId: string, isSpectator = false) {
+    playSFX('click');
+    try {
+      const { data: room, error: roomError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', matchId)
+        .maybeSingle();
+
+      if (roomError || !room) {
+        triggerGamingAlert(isRtl ? 'لم يتم العثور على الغرفة أو لم تبدأ بعد.' : 'Match room not found or not active yet.', 'error');
+        return;
+      }
+
+      const { error: joinError } = await supabase
+        .from('room_participants')
+        .upsert({
+          room_id: room.id,
+          user_id: user!.id,
+          is_host: room.host_id === user!.id,
+          is_ready: true,
+          score: 0,
+          is_spectator: isSpectator
+        }, {
+          onConflict: 'room_id,user_id'
+        });
+
+      if (joinError) {
+        triggerGamingAlert('Failed to join match: ' + joinError.message, 'error');
+        return;
+      }
+
+      const { data: participantsList, error: partError } = await supabase
+        .from('room_participants')
+        .select(`
+          score,
+          is_host,
+          is_ready,
+          team_id,
+          is_spectator,
+          user_id,
+          profiles (
+            username,
+            avatar_url,
+            rank
+          )
+        `)
+        .eq('room_id', room.id);
+
+      if (partError) {
+        triggerGamingAlert('Failed to fetch room participants.', 'error');
+        return;
+      }
+
+      const formattedParticipants = (participantsList || []).map((p: any) => ({
+        userId: p.user_id,
+        username: p.profiles?.username || 'Player',
+        avatarUrl: p.profiles?.avatar_url || null,
+        rank: p.profiles?.rank || 'Bronze',
+        score: p.score,
+        isHost: p.is_host,
+        isReady: p.is_ready,
+        teamId: p.team_id,
+        isSpectator: p.is_spectator
+      }));
+
+      const roomDetails = {
+        ...room,
+        participants: formattedParticipants
+      };
+
+      setCurrentRoom(roomDetails);
+      setParticipants(formattedParticipants);
+      setScreen('lobby');
+
+      const sync = new GameSyncService(room.id, user!.id, user!.username, room.host_id === user!.id);
+      gameSyncRef.current = sync;
+      setupGameSyncCallbacks(sync);
+      await sync.connect();
+
+      const { data: { session } } = await supabase.auth.getSession();
+      connectToSocketServer(room.code, user!.username, session?.access_token || undefined);
+    } catch (e) {
+      console.error('joinTournamentRoom error:', e);
+      triggerGamingAlert('Error joining tournament match.', 'error');
+    }
+  }
 
   // ==========================================
   // Game Board Operations
@@ -1541,11 +2106,16 @@ export default function ClientPage() {
 
     if (currentRoom && gameSyncRef.current && activeRoundRef.current) {
       const ok = await gameSyncRef.current.buzz(activeRoundRef.current.id, bid);
-      if (ok && (bt === 'HIDDEN' || bt === 'AUCTION')) {
-        playSFX('buzz');
-        triggerVibrate(150);
-        setIsBuzzed(true);
-        setBuzzedUser(user!.username);
+      if (ok) {
+        if (socketRef.current) {
+          socketRef.current.emit(GameEvents.BUZZ, { roomId: currentRoom.code });
+        }
+        if (bt === 'HIDDEN' || bt === 'AUCTION') {
+          playSFX('buzz');
+          triggerVibrate(150);
+          setIsBuzzed(true);
+          setBuzzedUser(user!.username);
+        }
       }
       return;
     }
@@ -1890,6 +2460,678 @@ export default function ClientPage() {
     }
   };
 
+  const renderTournamentsView = () => {
+    if (creatingTournament) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px' }}>
+              <button style={styles.backBtn} onClick={() => setCreatingTournament(false)}>◀</button>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff' }}>
+                {isRtl ? 'إنشاء بطولة جديدة' : 'Create New Tournament'}
+              </h2>
+            </div>
+            
+            <form onSubmit={handleCreateTournament} style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', maxHeight: '420px', paddingRight: '4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'اسم البطولة' : 'Tournament Name'}</label>
+                <input
+                  type="text"
+                  required
+                  placeholder={isRtl ? 'أدخل اسم البطولة...' : 'Enter tournament name...'}
+                  value={tourName}
+                  onChange={(e) => setTourName(e.target.value)}
+                  style={{
+                    padding: '10px',
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#ffffff',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'وصف البطولة' : 'Description'}</label>
+                <textarea
+                  placeholder={isRtl ? 'أدخل وصف البطولة...' : 'Enter description...'}
+                  value={tourDesc}
+                  onChange={(e) => setTourDesc(e.target.value)}
+                  style={{
+                    padding: '10px',
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#ffffff',
+                    fontSize: '0.85rem',
+                    minHeight: '60px',
+                    resize: 'none'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'نظام البطولة' : 'Format'}</label>
+                  <select
+                    value={tourFormat}
+                    onChange={(e) => setTourFormat(e.target.value as TournamentFormat)}
+                    style={{
+                      padding: '10px',
+                      borderRadius: '6px',
+                      backgroundColor: '#111528',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <option value="KNOCKOUT">{isRtl ? 'خروج المغلوب' : 'Knockout'}</option>
+                    <option value="DOUBLE_ELIMINATION">{isRtl ? 'الفرصة المزدوجة' : 'Double Elimination'}</option>
+                    <option value="LEAGUE">{isRtl ? 'دوري' : 'League'}</option>
+                    <option value="SWISS">{isRtl ? 'سويسري' : 'Swiss'}</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'حجم البطولة' : 'Bracket Size'}</label>
+                  <select
+                    value={tourSize}
+                    onChange={(e) => setTourSize(Number(e.target.value))}
+                    style={{
+                      padding: '10px',
+                      borderRadius: '6px',
+                      backgroundColor: '#111528',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <option value={8}>8 {isRtl ? 'فرق' : 'teams'}</option>
+                    <option value={16}>16 {isRtl ? 'فريق' : 'teams'}</option>
+                    <option value={32}>32 {isRtl ? 'فريق' : 'teams'}</option>
+                    <option value={64}>64 {isRtl ? 'فريق' : 'teams'}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'رسوم الدخول (نقود)' : 'Entry Fee (Coins)'}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={tourFeeCoins}
+                    onChange={(e) => setTourFeeCoins(Number(e.target.value))}
+                    style={{
+                      padding: '10px',
+                      borderRadius: '6px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'رسوم الدخول (توكن)' : 'Entry Fee (Tokens)'}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={tourFeeTokens}
+                    onChange={(e) => setTourFeeTokens(Number(e.target.value))}
+                    style={{
+                      padding: '10px',
+                      borderRadius: '6px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', color: '#8a93c0' }}>{isRtl ? 'الجائزة الكبرى (توكن)' : 'Prize Pool (Tokens)'}</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={tourPrizeTokens}
+                  onChange={(e) => setTourPrizeTokens(Number(e.target.value))}
+                  style={{
+                    padding: '10px',
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: '#ffffff',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                style={{
+                  marginTop: '10px',
+                  padding: '12px',
+                  borderRadius: '6px',
+                  background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+                  color: '#05060f',
+                  fontWeight: 'bold',
+                  border: 'none',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 15px rgba(0, 242, 254, 0.3)'
+                }}
+              >
+                {isRtl ? 'تأكيد الإنشاء' : 'Confirm Creation'}
+              </button>
+            </form>
+          </div>
+          
+          <div style={styles.bottomNavMock}>
+            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingTournament(false); setViewingTournaments(false); }}>🎒</span>
+            <span>🛒</span>
+            <span>⚔️</span>
+            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
+            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingTournament(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (selectedTournament) {
+      const isRegistered = selectedTournament.participants?.some((p: any) => p.userId === user?.id);
+      const isFull = (selectedTournament.participants?.length || 0) >= selectedTournament.bracket_size;
+
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexShrink: 0 }}>
+              <button style={styles.backBtn} onClick={() => { playSFX('click'); setSelectedTournament(null); fetchTournaments(); }}>◀</button>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>{selectedTournament.name}</h2>
+                <span style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
+                  {selectedTournament.format} • {selectedTournament.bracket_size} {isRtl ? 'فرق' : 'teams'}
+                </span>
+              </div>
+              <span style={{
+                marginLeft: 'auto',
+                fontSize: '0.65rem',
+                backgroundColor: selectedTournament.status === 'REGISTRATION' ? 'rgba(0, 255, 135, 0.1)' : 'rgba(0, 242, 254, 0.1)',
+                color: selectedTournament.status === 'REGISTRATION' ? '#00ff87' : '#00f2fe',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                fontWeight: 'bold'
+              }}>
+                {selectedTournament.status}
+              </span>
+            </div>
+
+            {/* Main Area */}
+            {selectedTournament.status === 'REGISTRATION' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+                <div style={{ padding: '12px', backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                  <p style={{ margin: '0 0 8px 0', fontSize: '0.8rem', color: '#8a93c0' }}>{selectedTournament.description || (isRtl ? 'لا يوجد وصف.' : 'No description available.')}</p>
+                  <div style={{ display: 'flex', gap: '12px', fontSize: '0.75rem', color: '#ffffff', fontWeight: 'bold' }}>
+                    <span>🪙 {selectedTournament.entry_fee_coins} {isRtl ? 'نقود' : 'coins'}</span>
+                    <span>⚡ {selectedTournament.entry_fee_tokens} {isRtl ? 'توكن' : 'tokens'}</span>
+                    <span style={{ color: '#ffd700' }}>🏆 {selectedTournament.prize_pool?.first_place_tokens || 10} {isRtl ? 'توكن جائزة' : 'tokens prize'}</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <h4 style={{ margin: '4px 0', fontSize: '0.85rem', color: '#ffffff', fontWeight: 'bold' }}>
+                    {isRtl ? 'اللاعبون المسجلون' : 'Registered Players'} ({selectedTournament.participants?.length || 0} / {selectedTournament.bracket_size})
+                  </h4>
+
+                  {isRegistered ? (
+                    <div style={{ padding: '10px', textAlign: 'center', backgroundColor: 'rgba(0, 255, 135, 0.05)', border: '1px solid rgba(0, 255, 135, 0.15)', borderRadius: '6px', color: '#00ff87', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                      ✓ {isRtl ? 'أنت مسجل في هذه البطولة!' : 'You are registered for this tournament!'}
+                    </div>
+                  ) : isFull ? (
+                    <div style={{ padding: '10px', textAlign: 'center', backgroundColor: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.05)', borderRadius: '6px', color: '#8a93c0', fontSize: '0.8rem' }}>
+                      {isRtl ? 'البطولة ممتلئة، بانتظار البدء...' : 'Tournament is full, waiting to start...'}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => registerForTournament(selectedTournament.id)}
+                      style={{
+                        padding: '12px',
+                        backgroundColor: '#00ff87',
+                        color: '#05060f',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        fontSize: '0.85rem',
+                        boxShadow: '0 4px 12px rgba(0, 255, 135, 0.2)'
+                      }}
+                    >
+                      {isRtl ? 'سجل الآن في البطولة' : 'Register Now'}
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto', maxHeight: '180px' }}>
+                  {selectedTournament.participants?.map((p: any, idx: number) => (
+                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                      <span style={{ fontSize: '0.8rem', color: '#ffffff', fontWeight: 'bold' }}>
+                        {idx + 1}. {p.username}
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>{p.rank}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                {selectedTournament.format === 'KNOCKOUT' || selectedTournament.format === 'DOUBLE_ELIMINATION' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                    <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', marginBottom: '8px', paddingBottom: '4px', flexShrink: 0 }}>
+                      {selectedTournament.bracket?.map((round: any) => (
+                        <button
+                          key={round.roundNumber}
+                          onClick={() => setTourActiveRoundTab(round.roundNumber)}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '4px',
+                            backgroundColor: tourActiveRoundTab === round.roundNumber ? '#00f2fe' : 'rgba(255,255,255,0.03)',
+                            color: tourActiveRoundTab === round.roundNumber ? '#05060f' : '#8a93c0',
+                            border: 'none',
+                            fontSize: '0.75rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {round.name}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: '4px' }}>
+                      {selectedTournament.bracket?.find((r: any) => r.roundNumber === tourActiveRoundTab)?.matchups.map((matchup: any) => {
+                        const isUserP1 = matchup.p1 === user?.id;
+                        const isUserP2 = matchup.p2 === user?.id;
+                        const isUserInMatch = isUserP1 || isUserP2;
+
+                        return (
+                          <div
+                            key={matchup.id}
+                            style={{
+                              padding: '10px 14px',
+                              backgroundColor: isUserInMatch ? 'rgba(0, 242, 254, 0.04)' : 'rgba(255, 255, 255, 0.02)',
+                              border: `1px solid ${isUserInMatch ? '#00f2fe' : 'rgba(255, 255, 255, 0.05)'}`,
+                              borderRadius: '8px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
+                                <span style={{
+                                  fontWeight: 'bold',
+                                  color: matchup.winner === matchup.p1 && matchup.winner ? '#00ff87' : '#ffffff',
+                                  textDecoration: matchup.winner && matchup.winner !== matchup.p1 ? 'line-through' : 'none'
+                                }}>
+                                  {matchup.p1Username || 'TBD'} {isUserP1 && `(${isRtl ? 'أنت' : 'You'})`}
+                                </span>
+                                <span style={{
+                                  fontWeight: 'bold',
+                                  color: matchup.winner === matchup.p2 && matchup.winner ? '#00ff87' : '#ffffff',
+                                  textDecoration: matchup.winner && matchup.winner !== matchup.p2 ? 'line-through' : 'none'
+                                }}>
+                                  {matchup.p2Username || 'TBD'} {isUserP2 && `(${isRtl ? 'أنت' : 'You'})`}
+                                </span>
+                              </div>
+
+                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                                <span style={{
+                                  fontSize: '0.65rem',
+                                  backgroundColor: matchup.status === 'COMPLETED' ? 'rgba(0, 255, 135, 0.1)' : matchup.status === 'PLAYING' ? 'rgba(0, 242, 254, 0.1)' : 'rgba(255,255,255,0.05)',
+                                  color: matchup.status === 'COMPLETED' ? '#00ff87' : matchup.status === 'PLAYING' ? '#00f2fe' : '#8a93c0',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontWeight: 'bold'
+                                }}>
+                                  {matchup.status}
+                                </span>
+                              </div>
+                            </div>
+
+                            {matchup.status === 'PLAYING' && (
+                              <div style={{ display: 'flex', marginTop: '4px' }}>
+                                {isUserInMatch ? (
+                                  <button
+                                    onClick={() => joinTournamentRoom(matchup.matchId)}
+                                    style={{
+                                      width: '100%',
+                                      padding: '8px',
+                                      backgroundColor: '#00f2fe',
+                                      color: '#05060f',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      fontSize: '0.75rem',
+                                      fontWeight: 'bold',
+                                      cursor: 'pointer',
+                                      boxShadow: '0 0 10px rgba(0, 242, 254, 0.3)'
+                                    }}
+                                  >
+                                    ⚔️ {isRtl ? 'العب مباراتك الآن' : 'PLAY MATCH NOW'}
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => joinTournamentRoom(matchup.matchId, true)}
+                                    style={{
+                                      width: '100%',
+                                      padding: '8px',
+                                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                      color: '#ffffff',
+                                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                                      borderRadius: '4px',
+                                      fontSize: '0.75rem',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    👁️ {isRtl ? 'شاهد المباراة' : 'Spectate Match'}
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                    <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.05)', marginBottom: '8px', flexShrink: 0 }}>
+                      <button
+                        onClick={() => setTourActiveTab('bracket')}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: 'none',
+                          border: 'none',
+                          borderBottom: tourActiveTab === 'bracket' ? '2px solid #00f2fe' : 'none',
+                          color: tourActiveTab === 'bracket' ? '#00f2fe' : '#8a93c0',
+                          fontSize: '0.8rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {isRtl ? 'المباريات' : 'Matches'}
+                      </button>
+                      <button
+                        onClick={() => setTourActiveTab('standings')}
+                        style={{
+                          flex: 1,
+                          padding: '10px',
+                          background: 'none',
+                          border: 'none',
+                          borderBottom: tourActiveTab === 'standings' ? '2px solid #00f2fe' : 'none',
+                          color: tourActiveTab === 'standings' ? '#00f2fe' : '#8a93c0',
+                          fontSize: '0.8rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {isRtl ? 'الترتيب' : 'Standings'}
+                      </button>
+                    </div>
+
+                    {tourActiveTab === 'bracket' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                        <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', marginBottom: '8px', paddingBottom: '4px', flexShrink: 0 }}>
+                          {selectedTournament.bracket?.map((round: any) => (
+                            <button
+                              key={round.roundNumber}
+                              onClick={() => setTourActiveRoundTab(round.roundNumber)}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: '4px',
+                                backgroundColor: tourActiveRoundTab === round.roundNumber ? '#00f2fe' : 'rgba(255,255,255,0.03)',
+                                color: tourActiveRoundTab === round.roundNumber ? '#05060f' : '#8a93c0',
+                                border: 'none',
+                                fontSize: '0.75rem',
+                                fontWeight: 'bold',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              {round.name}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: '4px' }}>
+                          {selectedTournament.bracket?.find((r: any) => r.roundNumber === tourActiveRoundTab)?.matchups.map((matchup: any) => {
+                            const isUserP1 = matchup.p1 === user?.id;
+                            const isUserP2 = matchup.p2 === user?.id;
+                            const isUserInMatch = isUserP1 || isUserP2;
+
+                            return (
+                              <div
+                                key={matchup.id}
+                                style={{
+                                  padding: '10px 14px',
+                                  backgroundColor: isUserInMatch ? 'rgba(0, 242, 254, 0.04)' : 'rgba(255, 255, 255, 0.02)',
+                                  border: `1px solid ${isUserInMatch ? '#00f2fe' : 'rgba(255, 255, 255, 0.05)'}`,
+                                  borderRadius: '8px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '6px'
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
+                                    <span style={{
+                                      fontWeight: 'bold',
+                                      color: matchup.winner === matchup.p1 && matchup.winner ? '#00ff87' : '#ffffff',
+                                      textDecoration: matchup.winner && matchup.winner !== matchup.p1 ? 'line-through' : 'none'
+                                    }}>
+                                      {matchup.p1Username || 'TBD'} {isUserP1 && `(${isRtl ? 'أنت' : 'You'})`}
+                                    </span>
+                                    <span style={{
+                                      fontWeight: 'bold',
+                                      color: matchup.winner === matchup.p2 && matchup.winner ? '#00ff87' : '#ffffff',
+                                      textDecoration: matchup.winner && matchup.winner !== matchup.p2 ? 'line-through' : 'none'
+                                    }}>
+                                      {matchup.p2Username || 'TBD'} {isUserP2 && `(${isRtl ? 'أنت' : 'You'})`}
+                                    </span>
+                                  </div>
+
+                                  <span style={{
+                                    fontSize: '0.65rem',
+                                    backgroundColor: matchup.status === 'COMPLETED' ? 'rgba(0, 255, 135, 0.1)' : matchup.status === 'PLAYING' ? 'rgba(0, 242, 254, 0.1)' : 'rgba(255,255,255,0.05)',
+                                    color: matchup.status === 'COMPLETED' ? '#00ff87' : matchup.status === 'PLAYING' ? '#00f2fe' : '#8a93c0',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontWeight: 'bold'
+                                  }}>
+                                    {matchup.status}
+                                  </span>
+                                </div>
+
+                                {matchup.status === 'PLAYING' && (
+                                  <div style={{ display: 'flex', marginTop: '4px' }}>
+                                    {isUserInMatch ? (
+                                      <button
+                                        onClick={() => joinTournamentRoom(matchup.matchId)}
+                                        style={{
+                                          width: '100%',
+                                          padding: '8px',
+                                          backgroundColor: '#00f2fe',
+                                          color: '#05060f',
+                                          border: 'none',
+                                          borderRadius: '4px',
+                                          fontSize: '0.75rem',
+                                          fontWeight: 'bold',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        ⚔️ {isRtl ? 'العب مباراتك الآن' : 'PLAY MATCH NOW'}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={() => joinTournamentRoom(matchup.matchId, true)}
+                                        style={{
+                                          width: '100%',
+                                          padding: '8px',
+                                          backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                          color: '#ffffff',
+                                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                                          borderRadius: '4px',
+                                          fontSize: '0.75rem',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        👁️ {isRtl ? 'شاهد المباراة' : 'Spectate'}
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: '4px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', color: '#ffffff' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)', color: '#8a93c0', textAlign: 'left' }}>
+                              <th style={{ padding: '6px' }}>{isRtl ? 'اللاعب' : 'Player'}</th>
+                              <th style={{ padding: '6px', textAlign: 'center' }}>{isRtl ? 'فوز' : 'Wins'}</th>
+                              <th style={{ padding: '6px', textAlign: 'center' }}>{isRtl ? 'خسارة' : 'Losses'}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedTournament.participants?.sort((a: any, b: any) => b.wins - a.wins).map((p: any) => (
+                              <tr key={p.id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.02)' }}>
+                                <td style={{ padding: '8px 6px', fontWeight: 'bold' }}>{p.username}</td>
+                                <td style={{ padding: '8px 6px', textAlign: 'center', color: '#00ff87', fontWeight: 'bold' }}>{p.wins}</td>
+                                <td style={{ padding: '8px 6px', textAlign: 'center', color: '#ff3b5c' }}>{p.losses}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div style={styles.bottomNavMock}>
+            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedTournament(null); setViewingTournaments(false); }}>🎒</span>
+            <span>🛒</span>
+            <span>⚔️</span>
+            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
+            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedTournament(null); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+              🏆 {isRtl ? 'ساحة البطولات' : 'Tournament Arena'}
+            </h2>
+            <button
+              onClick={() => { playSFX('click'); setCreatingTournament(true); }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '6px',
+                background: 'linear-gradient(135deg, #ffd700 0%, #c9a227 100%)',
+                color: '#05060f',
+                fontWeight: 'bold',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                boxShadow: '0 2px 8px rgba(255, 215, 0, 0.2)'
+              }}
+            >
+              ➕ {isRtl ? 'إنشاء بطولة' : 'Host'}
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: '4px' }}>
+            {loadingTournaments ? (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '40px' }}>
+                <div style={{ width: '30px', height: '30px', borderRadius: '50%', border: '2px solid rgba(255,255,255,0.05)', borderTopColor: '#00f2fe', animation: 'spin 1s linear infinite' }}></div>
+              </div>
+            ) : tournaments.length === 0 ? (
+              <div style={{ padding: '40px 20px', textAlign: 'center', color: '#8a93c0', fontStyle: 'italic', fontSize: '0.85rem' }}>
+                {isRtl ? 'لا توجد بطولات نشطة حالياً. أنشئ واحدة أولاً!' : 'No tournaments currently active. Host one now!'}
+              </div>
+            ) : (
+              tournaments.map((t) => (
+                <div
+                  key={t.id}
+                  onClick={() => { playSFX('click'); fetchTournamentDetails(t.id); }}
+                  style={{
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid rgba(255, 255, 255, 0.05)',
+                    borderLeft: `3px solid ${t.status === 'REGISTRATION' ? '#00ff87' : t.status === 'IN_PROGRESS' ? '#00f2fe' : '#8a93c0'}`,
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    transition: 'all 0.2s ease'
+                  }}
+                  className="accordion-trigger"
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 }}>
+                    <h3 style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#ffffff', margin: 0, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                      {t.name}
+                    </h3>
+                    <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                      {t.format} • {t.bracket_size} {isRtl ? 'فرق' : 'teams'} ({t.participantsCount || 0} {isRtl ? 'مسجل' : 'joined'})
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: '#ffd700', fontWeight: 'bold' }}>
+                      🏆 {t.prize_pool?.first_place_tokens || 10} Creator Tokens
+                    </span>
+                  </div>
+
+                  <span style={{
+                    fontSize: '0.65rem',
+                    backgroundColor: t.status === 'REGISTRATION' ? 'rgba(0, 255, 135, 0.1)' : t.status === 'IN_PROGRESS' ? 'rgba(0, 242, 254, 0.1)' : 'rgba(255,255,255,0.05)',
+                    color: t.status === 'REGISTRATION' ? '#00ff87' : t.status === 'IN_PROGRESS' ? '#00f2fe' : '#8a93c0',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    fontWeight: 'bold',
+                    flexShrink: 0
+                  }}>
+                    {t.status}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div style={styles.bottomNavMock}>
+          <span style={{ cursor: 'pointer' }} onClick={() => setViewingTournaments(false)}>🎒</span>
+          <span>🛒</span>
+          <span>⚔️</span>
+          <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
+          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+        </div>
+      </div>
+    );
+  };
+
   const t = isRtl ? text.ar : text.en;
 
   if (loading || !user) {
@@ -1924,7 +3166,7 @@ export default function ClientPage() {
   }
 
   const selfPart = participants.find(p => p.userId === user?.id);
-  const isSpectator = selfPart?.isSpectator || false;
+  const isSpectator = isAudienceSpectator || selfPart?.isSpectator || false;
 
   return (
     <div style={styles.appContainer} dir={isRtl ? 'rtl' : 'ltr'}>
@@ -1998,13 +3240,15 @@ export default function ClientPage() {
                 </div>
 
                 <div style={styles.bottomNavMock}>
-                  <span style={{ cursor: 'pointer' }} onClick={() => setViewingLeaderboard(false)}>🎒</span>
+                  <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(false); setViewingTournaments(false); }}>🎒</span>
                   <span>🛒</span>
                   <span>⚔️</span>
-                  <span>🏰</span>
+                  <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(false); setViewingTournaments(true); fetchTournaments(); }}>🏰</span>
                   <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={loadLeaderboardData}>🏆</span>
                 </div>
               </div>
+            ) : viewingTournaments ? (
+              renderTournamentsView()
             ) : (() => {
               const todayDateStr = new Date().toISOString().split('T')[0];
               const isDailyCompleted = (user.stats as any)?.lastDailyChallengeCompleted === todayDateStr;
@@ -2162,11 +3406,26 @@ export default function ClientPage() {
                   </div>
 
                   <div style={styles.bottomNavMock}>
-                    <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={() => setViewingLeaderboard(false)}>🎒</span>
+                    <span 
+                      style={{ cursor: 'pointer', ...((!viewingLeaderboard && !viewingTournaments) ? styles.activeNavTab : {}) }} 
+                      onClick={() => { playSFX('click'); setViewingLeaderboard(false); setViewingTournaments(false); }}
+                    >
+                      🎒
+                    </span>
                     <span>🛒</span>
                     <span>⚔️</span>
-                    <span>🏰</span>
-                    <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+                    <span 
+                      style={{ cursor: 'pointer', ...((!viewingLeaderboard && viewingTournaments) ? styles.activeNavTab : {}) }} 
+                      onClick={() => { playSFX('click'); setViewingLeaderboard(false); setViewingTournaments(true); fetchTournaments(); }}
+                    >
+                      🏰
+                    </span>
+                    <span 
+                      style={{ cursor: 'pointer', ...(viewingLeaderboard ? styles.activeNavTab : {}) }} 
+                      onClick={() => { playSFX('click'); setViewingLeaderboard(true); setViewingTournaments(false); loadLeaderboardData(); }}
+                    >
+                      🏆
+                    </span>
                   </div>
                 </>
               );
@@ -2177,7 +3436,7 @@ export default function ClientPage() {
         {/* SCREEN: LOBBY SCREEN */}
         {screen === 'lobby' && currentRoom && (() => {
           const selfPart = participants.find(p => p.userId === user?.id);
-          const isSpectator = selfPart?.isSpectator || false;
+          const isSpectator = isAudienceSpectator || selfPart?.isSpectator || false;
           return (
             <div style={styles.screenContainer}>
               <div style={styles.lobbyHeader}>
@@ -2374,6 +3633,57 @@ export default function ClientPage() {
                   </div>
                 </div>
               )}
+
+              {/* STREAMER AUDIENCE JOIN LINK CARD */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '12px 16px',
+                backgroundColor: 'rgba(255, 215, 0, 0.02)',
+                border: '1px solid rgba(255, 215, 0, 0.08)',
+                borderRadius: '8px',
+                margin: '12px 0'
+              }}>
+                <span style={{ fontSize: '0.65rem', color: '#ffd700', fontWeight: 700, letterSpacing: '0.05em' }}>
+                  📢 {isRtl ? 'رابط مشاركة البث المباشر للجمهور' : 'STREAMER AUDIENCE JOIN LINK'}
+                </span>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    readOnly
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                    value={`${window.location.origin}/?room=${currentRoom.code}&role=audience`}
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#05060f',
+                      color: '#8a93c0',
+                      border: '1px solid rgba(255,255,255,0.06)',
+                      borderRadius: '4px',
+                      padding: '6px 10px',
+                      fontSize: '0.75rem',
+                      fontFamily: 'monospace',
+                      outline: 'none'
+                    }}
+                  />
+                  <button
+                    onClick={copyStreamerLink}
+                    style={{
+                      padding: '6px 16px',
+                      borderRadius: '4px',
+                      background: copiedLink ? 'rgba(0, 255, 135, 0.2)' : 'linear-gradient(135deg, #ffd700 0%, #c9a227 100%)',
+                      color: copiedLink ? '#00ff87' : '#05060f',
+                      border: 'none',
+                      fontWeight: 'bold',
+                      fontSize: '0.75rem',
+                      cursor: 'pointer',
+                      minWidth: '80px',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    {copiedLink ? (isRtl ? 'تم النسخ!' : 'Copied!') : (isRtl ? 'نسخ الرابط' : 'Copy Link')}
+                  </button>
+                </div>
+              </div>
 
               {/* PARTICIPANTS / TEAMS VIEW */}
               {currentRoom.config?.mode === 'TEAM_BATTLE' ? (
@@ -2887,9 +4197,11 @@ export default function ClientPage() {
           const buzzedTeamId = buzzedPlayerPart?.teamId || null;
           const isMyTeamBuzzed = isBuzzed && (buzzedUser === user?.username || (myTeamId !== null && myTeamId === buzzedTeamId));
           
-          const isInputDisabled = answerSubmitted || isSpectator || 
-            (isBuzzed && !isMyTeamBuzzed) || 
-            (isBuzzed && buzzedUser !== user?.username && bt !== 'TEAM_CONSULTATION');
+          const isInputDisabled = isAudienceSpectator 
+            ? spectatorAnswerSubmitted 
+            : (answerSubmitted || isSpectator || 
+               (isBuzzed && !isMyTeamBuzzed) || 
+               (isBuzzed && buzzedUser !== user?.username && bt !== 'TEAM_CONSULTATION'));
           const isTeamMode = gameMode === 'TEAM_BATTLE';
           
           let leftTeamName: string = user?.username || 'Player';
@@ -3639,8 +4951,145 @@ export default function ClientPage() {
                 </div>
               )}
 
+              {isAudienceSpectator && spectatorAnswerSubmitted && (
+                <div style={{
+                  ...styles.feedbackPanel,
+                  borderColor: spectatorIsAnswerCorrect ? '#ffd700' : '#ff3b5c',
+                  backgroundColor: spectatorIsAnswerCorrect ? 'rgba(255, 215, 0, 0.05)' : 'rgba(255, 59, 92, 0.05)',
+                  marginTop: '12px'
+                }}>
+                  <div style={{
+                    ...styles.feedbackTitle,
+                    color: spectatorIsAnswerCorrect ? '#ffd700' : '#ff3b5c'
+                  }}>
+                    {spectatorIsAnswerCorrect === null 
+                      ? (isRtl ? 'بانتظار تصحيح الإجابة...' : 'Awaiting Grading...')
+                      : spectatorIsAnswerCorrect 
+                        ? `${t.correctText} (+${spectatorPointsEarned} pts)` 
+                        : t.wrongText}
+                  </div>
+                  {spectatorCorrectAnswer !== null && spectatorCorrectAnswer !== undefined && (
+                    <div style={{ fontSize: '0.8rem', color: '#ffffff', margin: '4px 0' }}>
+                      <strong>{isRtl ? 'الإجابة الصحيحة:' : 'Correct Answer:'}</strong> {JSON.stringify(spectatorCorrectAnswer)}
+                    </div>
+                  )}
+                  {spectatorExplanation && (
+                    <div style={styles.explanationText}>
+                      <strong>{t.explanation}:</strong> {spectatorExplanation}
+                    </div>
+                  )}
+                  <div style={{ fontSize: '0.75rem', color: '#ffd700', marginTop: '8px', fontWeight: 'bold' }}>
+                    🏆 {isRtl ? `مجموع نقاطك: ${audienceScore}` : `Your Audience Score: ${audienceScore}`}
+                  </div>
+                </div>
+              )}
+
+              {/* Audience Leaderboard Side-Panel */}
+              {audienceLeaderboard && audienceLeaderboard.length > 0 && (
+                <div style={{
+                  marginTop: '12px',
+                  padding: '12px',
+                  backgroundColor: 'rgba(255, 215, 0, 0.02)',
+                  border: '1px solid rgba(255, 215, 0, 0.1)',
+                  borderRadius: '8px',
+                  backdropFilter: 'blur(10px)'
+                }}>
+                  <div style={{
+                    fontSize: '0.75rem',
+                    color: '#ffd700',
+                    fontWeight: 700,
+                    letterSpacing: '1px',
+                    marginBottom: '8px',
+                    textTransform: 'uppercase',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}>
+                    <span>📊 {isRtl ? 'متصدري الجمهور (أفضل 5)' : 'Audience Top 5'}</span>
+                    <span style={{ fontSize: '0.6rem', color: '#8a93c0', fontWeight: 'normal' }}>
+                      {isRtl ? `${audienceLeaderboard.length} متفرجاً` : `${audienceLeaderboard.length} Viewers`}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {audienceLeaderboard.slice(0, 5).map((entry, idx) => {
+                      const isLocalGuest = entry.username === audienceNickname || (user && entry.username === user.username);
+                      return (
+                        <div key={idx} style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          padding: '6px 10px',
+                          backgroundColor: isLocalGuest ? 'rgba(255, 215, 0, 0.1)' : 'rgba(255, 255, 255, 0.02)',
+                          border: isLocalGuest ? '1px solid rgba(255, 215, 0, 0.2)' : '1px solid rgba(255, 255, 255, 0.04)',
+                          borderRadius: '6px'
+                        }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: isLocalGuest ? '#ffd700' : '#ffffff' }}>
+                            #{idx + 1} {entry.username} {isLocalGuest && (isRtl ? '(أنت)' : '(You)')}
+                          </span>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#00f5ff' }}>
+                            {entry.score} pts
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div style={styles.gameActionBar}>
-                {isSpectator ? (
+                {isAudienceSpectator ? (
+                  !spectatorAnswerSubmitted ? (
+                    <button
+                      onClick={() => {
+                        const q = gameQuestions[currentQIndex];
+                        let userAns: any = null;
+                        if (q.type === 'MULTIPLE_CHOICE' || q.type === 'TRUE_FALSE' || q.type === 'IMAGE_QUESTION' || q.type === 'CIRCUIT_QUESTION') {
+                          userAns = selectedOption;
+                        } else if (q.type === 'FILL_IN_THE_BLANK' || q.type === 'CALCULATION_QUESTION' || q.type === 'CODING_QUESTION' || q.type === 'SHORT_ANSWER') {
+                          userAns = textAnswer.trim();
+                        } else if (q.type === 'MULTI_SELECT') {
+                          userAns = selectedOption || [];
+                        } else if (q.type === 'ORDERING_QUESTION') {
+                          userAns = orderIds;
+                        } else if (q.type === 'MATCHING_QUESTION') {
+                          userAns = matchingSelections;
+                        }
+
+                        if (userAns === null || userAns === undefined || (Array.isArray(userAns) && userAns.length === 0)) {
+                          triggerGamingAlert(
+                            isRtl ? 'من فضلك اختر أو اكتب إجابة أولاً!' : 'Please select or enter an answer first!',
+                            'warning'
+                          );
+                          return;
+                        }
+
+                        submitSpectatorAnswer(userAns);
+                      }}
+                      style={styles.submitAnsBtn}
+                    >
+                      📢 {isRtl ? 'إرسال إجابة الجمهور' : 'SUBMIT AUDIENCE ANSWER'}
+                    </button>
+                  ) : (
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                      padding: '10px',
+                      backgroundColor: 'rgba(0, 242, 254, 0.05)',
+                      border: '1px solid rgba(0, 242, 254, 0.15)',
+                      borderRadius: '8px',
+                      color: '#00f2fe',
+                      fontSize: '0.95rem',
+                      fontWeight: 700,
+                      letterSpacing: '1px',
+                      textAlign: 'center',
+                      width: '100%'
+                    }}>
+                      ⚡ {isRtl ? 'تم إرسال إجابة الجمهور · بانتظار النتائج' : 'AUDIENCE ANSWER SUBMITTED · AWAITING RESULTS'}
+                    </div>
+                  )
+                ) : isSpectator ? (
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -4049,8 +5498,54 @@ export default function ClientPage() {
                           })}
                         </tbody>
                       </table>
+                      </div>
                     </div>
-                  </div>
+
+                  {/* Final Audience Standings (If any spectator scores exist) */}
+                  {audienceLeaderboard && audienceLeaderboard.length > 0 && (
+                    <div style={{ ...styles.rewardsPanelCard, gap: '16px' }}>
+                      <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffd700', borderBottom: '1px solid rgba(255,215,0,0.15)', paddingBottom: '10px' }}>
+                        🏆 {isRtl ? 'النتائج النهائية للجمهور' : 'Final Audience Standings'}
+                      </h2>
+                      <div style={{ overflowX: 'auto', width: '100%' }}>
+                        <table className="glass-table" style={{ borderColor: 'rgba(255, 215, 0, 0.15)' }}>
+                          <thead>
+                            <tr>
+                              <th>{t.rankHeader}</th>
+                              <th>{isRtl ? 'المتفرج' : 'Spectator'}</th>
+                              <th>{t.scoreHeader}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {audienceLeaderboard.map((entry, idx) => {
+                              const isLocalGuest = entry.username === audienceNickname || (user && entry.username === user.username);
+                              const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+                              return (
+                                <tr key={idx} className={isLocalGuest ? "glass-table-row self" : "glass-table-row"} style={{
+                                  backgroundColor: isLocalGuest ? 'rgba(255, 215, 0, 0.05)' : 'transparent'
+                                }}>
+                                  <td style={{ fontWeight: 800, fontSize: idx < 3 ? '1.2rem' : '0.9rem', color: isLocalGuest ? '#ffd700' : '#ffffff' }}>{medal}</td>
+                                  <td>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', justifyContent: isRtl ? 'flex-end' : 'flex-start' }}>
+                                      <span style={{ fontWeight: isLocalGuest ? 800 : 500, color: isLocalGuest ? '#ffd700' : '#ffffff' }}>
+                                        {entry.username}
+                                      </span>
+                                      {isLocalGuest && (
+                                        <span style={{ fontSize: '0.7rem', padding: '2px 6px', background: 'rgba(255, 215, 0, 0.2)', border: '1px solid #ffd700', borderRadius: '4px', color: '#ffd700', fontWeight: 800 }}>
+                                          {isRtl ? 'أنت' : 'YOU'}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td style={{ fontWeight: 700, color: isLocalGuest ? '#ffd700' : '#00f5ff' }}>{entry.score}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Round-by-Round Breakdown Matrix */}
                   <div style={{ ...styles.rewardsPanelCard, gap: '16px' }}>
@@ -4393,6 +5888,65 @@ export default function ClientPage() {
                   onClick={() => { playSFX('click'); setShowStoreModal(false); }}
                 >
                   {isRtl ? 'إغلاق' : 'Close'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* NICKNAME ONBOARDING MODAL */}
+        {showNicknameModal && (
+          <div style={customStyles.alertOverlay}>
+            <div style={{ ...customStyles.alertBox, border: `2px solid #ffd700`, boxShadow: `0 0 20px #ffd70040, inset 0 0 10px #ffd70015` }}>
+              <div style={customStyles.alertHeader}>
+                <span style={{ ...customStyles.alertTitle, color: '#ffd700' }}>
+                  📢 {isRtl ? 'الانضمام كمتفرج من الجمهور' : 'JOIN AS AUDIENCE SPECTATOR'}
+                </span>
+              </div>
+              <div style={{ ...customStyles.alertBody, display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center' }}>
+                <p style={{ ...customStyles.alertMessage, textAlign: 'center', margin: 0, fontSize: '0.85rem', color: '#a0a7cc' }}>
+                  {isRtl ? 'يرجى إدخال اسم مستعار للمشاركة في توقعات البث والحصول على مركز في لوحة الصدارة!' : 'Please enter a nickname to participate in stream trivia and secure a spot on the leaderboard!'}
+                </p>
+                <input
+                  type="text"
+                  placeholder={isRtl ? 'الاسم المستعار...' : 'Enter nickname...'}
+                  value={audienceNickname}
+                  onChange={(e) => setAudienceNickname(e.target.value)}
+                  style={{
+                    width: '100%',
+                    backgroundColor: '#05060f',
+                    color: '#ffffff',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    fontSize: '0.9rem',
+                    textAlign: 'center',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleJoinAsAudienceGuest(audienceNickname);
+                    }
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                <button
+                  style={{
+                    flex: 1,
+                    padding: '12px',
+                    backgroundColor: '#ffd700',
+                    color: '#05060f',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '0.9rem',
+                    fontWeight: 'bold',
+                    transition: 'all 0.15s ease'
+                  }}
+                  onClick={() => handleJoinAsAudienceGuest(audienceNickname)}
+                >
+                  {isRtl ? 'انضمام الآن' : 'Join Now'}
                 </button>
               </div>
             </div>

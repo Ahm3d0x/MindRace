@@ -9,6 +9,8 @@ import { supabaseAdmin } from './lib/supabase';
 import { gradeAnswer } from './lib/grading';
 import questionsRouter from './routes/questions';
 import roomsRouter from './routes/rooms';
+import tournamentsRouter, { handleTournamentMatchCompletion } from './routes/tournaments';
+
 
 // Load environment variables
 dotenv.config();
@@ -92,10 +94,11 @@ app.get('/api/v1/users/me', requireAuth as any, (req: AuthenticatedRequest, res)
 // Register routes
 app.use('/api/v1/questions', questionsRouter);
 app.use('/api/v1/rooms', roomsRouter);
+app.use('/api/v1/tournaments', tournamentsRouter);
 
 // Create HTTP server and initialize socket.io
 const httpServer = createServer(app);
-const io = new Server(httpServer, {
+export const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
       if (isOriginAllowed(origin)) {
@@ -121,6 +124,8 @@ interface ActiveMatch {
   buzzedPlayerId: string | null;
   timeLeft: number;
   timerInterval: NodeJS.Timeout | null;
+  audienceScores?: { [userId: string]: { username: string; score: number } };
+  audienceAnswers?: { [roundIndex: number]: { [userId: string]: boolean } };
 }
 
 const activeMatches = new Map<string, ActiveMatch>();
@@ -280,7 +285,7 @@ function startMatchTicker(roomId: string) {
 
   match.timerInterval = setInterval(() => {
     match.timeLeft--;
-    io.to(roomId).emit('game:tick', { timeLeft: match.timeLeft });
+    io.to(roomId + ':players').emit('game:tick', { timeLeft: match.timeLeft });
 
     if (match.timeLeft <= 0) {
       clearInterval(match.timerInterval!);
@@ -298,12 +303,19 @@ async function endRound(roomId: string, userId: string | null, isCorrect: boolea
   const question = match.questions[match.currentRound];
   const correctAnswerVal = question.correctAnswer || question.orderingItems || question.matchingPairs;
 
+  const audienceLeaderboard = Object.entries(match.audienceScores || {}).map(([uId, data]) => ({
+    userId: uId,
+    username: data.username,
+    score: data.score
+  })).sort((a, b) => b.score - a.score).slice(0, 10);
+
   io.to(roomId).emit('game:round_ended', {
     userId,
     isCorrect,
     correctAnswer: correctAnswerVal,
     explanation: question.explanation,
-    scores: match.scores
+    scores: match.scores,
+    audienceLeaderboard
   });
 
   setTimeout(() => {
@@ -357,11 +369,21 @@ async function endMatch(roomId: string) {
     if (profile) winnerName = profile.username;
   }
 
+  const audienceLeaderboard = Object.entries(match.audienceScores || {}).map(([uId, data]) => ({
+    userId: uId,
+    username: data.username,
+    score: data.score
+  })).sort((a, b) => b.score - a.score).slice(0, 10);
+
   io.to(roomId).emit('game:ended', {
     scores: match.scores,
     winnerId,
-    winnerName
+    winnerName,
+    audienceLeaderboard
   });
+
+  // Handle tournament match completion progression
+  await handleTournamentMatchCompletion(roomId, winnerId);
 
   activeMatches.delete(roomId);
 }
@@ -412,6 +434,18 @@ async function performFullDisconnect(roomId: string, userId: string) {
 // WebSocket Connection Handlers
 // ==========================================
 io.use(async (socket, next) => {
+  const isAudience = !!socket.handshake.auth?.isAudience;
+  if (isAudience) {
+    const guestUsername = socket.handshake.auth?.username || `Viewer-${socket.id.substring(0, 5)}`;
+    socket.data.user = {
+      id: `guest:${socket.id}`,
+      email: `${socket.id}@guest.mindrace.local`,
+      user_metadata: { username: guestUsername },
+      isGuest: true
+    };
+    return next();
+  }
+
   const token = socket.handshake.auth?.token;
   if (!token) {
     console.log(`[Socket Auth] Connection rejected: Token missing`);
@@ -439,9 +473,69 @@ io.on('connection', (socket) => {
   console.log(`[Socket] User connected: ${socket.id} (Authenticated: ${email})`);
 
   socket.on(GameEvents.JOIN_ROOM, async ({ roomId, username }) => {
-    socket.join(roomId);
+    const isAudienceUser = !!socket.handshake.auth?.isAudience || !!socket.data.user?.isGuest;
     socket.data.roomId = roomId;
-    console.log(`[Socket] ${username} (${socket.id}) joined room ${roomId}`);
+
+    if (isAudienceUser) {
+      socket.join(roomId);
+      socket.join(roomId + ':audience');
+      console.log(`[Socket] Audience viewer ${username} (${socket.id}) joined room ${roomId}`);
+
+      const match = activeMatches.get(roomId);
+      if (match) {
+        if (!match.audienceScores) {
+          match.audienceScores = {};
+        }
+        match.audienceScores[userId] = {
+          username: socket.data.user?.user_metadata?.username || username || 'Spectator',
+          score: 0
+        };
+      }
+
+      // Fetch participants and send directly to this spectator (optimizing fan-out)
+      try {
+        const { data: participants } = await supabaseAdmin
+          .from('room_participants')
+          .select(`
+            score,
+            is_host,
+            is_ready,
+            team_id,
+            is_spectator,
+            user_id,
+            profiles (
+              username,
+              avatar_url,
+              rank
+            )
+          `)
+          .eq('room_id', roomId);
+        if (participants) {
+          const list = participants.map((p: any) => ({
+            userId: p.user_id,
+            username: p.profiles?.username || 'Player',
+            avatarUrl: p.profiles?.avatar_url || null,
+            rank: p.profiles?.rank || 'Bronze',
+            score: p.score,
+            isHost: p.is_host,
+            isReady: p.is_ready,
+            teamId: p.team_id,
+            isSpectator: p.is_spectator
+          }));
+          socket.emit(GameEvents.ROOM_STATE_CHANGE, {
+            event: 'PARTICIPANTS_UPDATE',
+            participants: list
+          });
+        }
+      } catch (err) {
+        console.error('[Socket] Guest join room state fetch error:', err);
+      }
+      return;
+    }
+
+    socket.join(roomId);
+    socket.join(roomId + ':players');
+    console.log(`[Socket] Player ${username} (${socket.id}) joined room ${roomId}`);
 
     // Cancel any pending disconnect grace timer for this user
     const timerKey = `${roomId}:${userId}`;
@@ -452,7 +546,7 @@ io.on('connection', (socket) => {
     }
 
     // Check if user already has a participant row (reconnection scenario)
-    if (userId) {
+    if (userId && !socket.data.user?.isGuest) {
       try {
         const { data: existing } = await supabaseAdmin
           .from('room_participants')
@@ -479,8 +573,23 @@ io.on('connection', (socket) => {
   });
 
   socket.on(GameEvents.LEAVE_ROOM, async ({ roomId }) => {
-    socket.leave(roomId);
+    const isAudienceUser = !!socket.handshake.auth?.isAudience || !!socket.data.user?.isGuest;
     socket.data.roomId = null;
+
+    if (isAudienceUser) {
+      socket.leave(roomId);
+      socket.leave(roomId + ':audience');
+      console.log(`[Socket] Audience viewer ${userId} left room ${roomId}`);
+
+      const match = activeMatches.get(roomId);
+      if (match && match.audienceScores) {
+        delete match.audienceScores[userId];
+      }
+      return;
+    }
+
+    socket.leave(roomId);
+    socket.leave(roomId + ':players');
     console.log(`[Socket] User ${userId} left room ${roomId}`);
     await broadcastRoomState(roomId);
   });
@@ -743,11 +852,67 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on(GameEvents.SUBMIT_AUDIENCE_ANSWER, async ({ roomId, answer }) => {
+    const match = activeMatches.get(roomId);
+    if (!match || match.status !== 'ACTIVE') return;
+    if (!userId) return;
+
+    const roundIndex = match.currentRound;
+
+    if (!match.audienceAnswers) match.audienceAnswers = {};
+    if (!match.audienceAnswers[roundIndex]) match.audienceAnswers[roundIndex] = {};
+
+    if (match.audienceAnswers[roundIndex][userId]) {
+      return;
+    }
+    match.audienceAnswers[roundIndex][userId] = true;
+
+    try {
+      const question = match.questions[roundIndex];
+      const gradingResult = await gradeAnswer(question, answer);
+      const isCorrect = gradingResult.isCorrect;
+
+      let pointsEarned = 0;
+      if (isCorrect) {
+        pointsEarned = Math.max(0, 100 + match.timeLeft * 2);
+        if (!match.audienceScores) match.audienceScores = {};
+        if (!match.audienceScores[userId]) {
+          match.audienceScores[userId] = {
+            username: socket.data.user?.user_metadata?.username || 'Viewer',
+            score: 0
+          };
+        }
+        match.audienceScores[userId].score += pointsEarned;
+      }
+
+      const correctAnswerVal = question.correctAnswer || (question as any).correct_answer || question.orderingItems || question.matchingPairs;
+
+      socket.emit(GameEvents.AUDIENCE_ANSWER_GRADED, {
+        isCorrect,
+        pointsEarned,
+        correctAnswer: correctAnswerVal,
+        explanation: question.explanation || '',
+        score: match.audienceScores?.[userId]?.score || 0
+      });
+    } catch (err) {
+      console.error('[Socket] Error grading audience answer:', err);
+    }
+  });
+
   socket.on('disconnect', async () => {
     const roomId = socket.data.roomId;
     console.log(`[Socket] User disconnected: ${socket.id} (${email})`);
 
     if (roomId && userId) {
+      if (socket.data.user?.isGuest) {
+        const match = activeMatches.get(roomId);
+        if (match && match.audienceScores) {
+          delete match.audienceScores[userId];
+        }
+        console.log(`[Socket] Guest spectator ${userId} disconnected. Cleaned up in-memory score.`);
+        return;
+      }
+
       const timerKey = `${roomId}:${userId}`;
 
       // Check if a match is currently active — if so, use a 30s grace period

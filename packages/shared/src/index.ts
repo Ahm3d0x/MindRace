@@ -240,6 +240,14 @@ export const GameEvents = {
   // Real-time Chat
   SEND_MESSAGE: 'chat:send',
   RECEIVE_MESSAGE: 'chat:receive',
+
+  // Tournaments
+  TOURNAMENT_UPDATE: 'tournament:update',
+
+  // Streamer Mode (Audience Participation)
+  SUBMIT_AUDIENCE_ANSWER: 'game:submit_audience_answer',
+  AUDIENCE_ANSWER_GRADED: 'game:audience_answer_graded',
+  AUDIENCE_LEADERBOARD: 'game:audience_leaderboard',
 } as const;
 
 // ==========================================
@@ -257,4 +265,71 @@ export interface GradingResult {
   explanation?: string;
   correctAnswer?: any; // returned only in practice or post-round contexts
 }
+
+// ==========================================
+// 8. Tournament Definitions
+// ==========================================
+export type TournamentFormat = 'KNOCKOUT' | 'DOUBLE_ELIMINATION' | 'LEAGUE' | 'SWISS';
+export type TournamentStatus = 'REGISTRATION' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+export interface TournamentMatchup {
+  id: string; // matchupId e.g. "w1m1"
+  p1: string | null; // userId
+  p2: string | null; // userId
+  p1Username?: string;
+  p2Username?: string;
+  winner: string | null; // winner userId
+  matchId: string | null; // room UUID
+  roomCode?: string; // room short code
+  status: 'WAITING' | 'READY' | 'PLAYING' | 'COMPLETED';
+  sourceMatchups?: string[]; // source matchup IDs
+  sourceLosers?: string[]; // double elimination: losers source
+  roundNumber: number;
+}
+
+export interface TournamentRound {
+  roundNumber: number;
+  name: string;
+  matchups: TournamentMatchup[];
+}
+
+export interface Tournament {
+  id: string;
+  name: string;
+  description: string | null;
+  format: TournamentFormat;
+  status: TournamentStatus;
+  bracketSize: number;
+  bracket: TournamentRound[];
+  maxTeamSize: number;
+  entryFeeCoins: number;
+  entryFeeTokens: number;
+  prizePool: {
+    first_place_tokens?: number;
+    second_place_tokens?: number;
+    [key: string]: any;
+  };
+  seasonId: string | null;
+  createdBy: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TournamentParticipant {
+  id: string;
+  tournamentId: string;
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  rank: string;
+  teamName: string | null;
+  seed: number | null;
+  isEliminated: boolean;
+  wins: number;
+  losses: number;
+  registeredAt: string;
+}
+
 

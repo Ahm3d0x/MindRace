@@ -2433,8 +2433,8 @@ export default function ClientPage() {
 
       if (isCorrect) {
         playSFX('correct');
-        const multiplier = activePowerUps.includes('JOKER') ? 2 : 1;
-        const points = (100 + (gameMode !== 'PRACTICE' ? timeLeft * 2 : 0)) * multiplier;
+        const multiplier = (activePowerUps.includes('JOKER') ? 2 : 1) * (activePowerUps.includes('POINT_MULTIPLIER') ? 1.5 : 1);
+        const points = Math.floor((100 + (gameMode !== 'PRACTICE' ? timeLeft * 2 : 0)) * multiplier);
         setScore(prev => prev + points);
         setCorrectAnswersCount(prev => prev + 1);
       } else {
@@ -4011,21 +4011,39 @@ export default function ClientPage() {
 
     // Skip Question logic
     if (type === 'SKIP_QUESTION') {
-      if (currentRoom && activeRoundRef.current) {
-        const ok = await supabase.rpc('skip_round_question', {
-          p_round_id: activeRoundRef.current.id,
-          p_user_id: user!.id
+      setActivePowerUps(prev => [...prev, 'SKIP_QUESTION']);
+      playSFX('buzz');
+      triggerVibrate(80);
+      
+      if (gameMode !== 'PRACTICE') {
+        setInventoryPowerUps(prev => {
+          const index = prev.indexOf('SKIP_QUESTION');
+          if (index > -1) {
+            const nextInv = [...prev];
+            nextInv.splice(index, 1);
+            return nextInv;
+          }
+          return prev;
         });
-        if (ok.data) {
-          playSFX('correct');
-          triggerGamingAlert(isRtl ? 'تم تخطي السؤال!' : 'Question skipped!', 'success');
-        } else {
-          triggerGamingAlert(isRtl ? 'فشل تخطي السؤال!' : 'Failed to skip question!', 'error');
-          return;
-        }
-      } else {
-        nextQuestion();
       }
+
+      setTimeout(async () => {
+        if (currentRoom && activeRoundRef.current) {
+          const ok = await supabase.rpc('skip_round_question', {
+            p_round_id: activeRoundRef.current.id,
+            p_user_id: user!.id
+          });
+          if (ok.data) {
+            playSFX('correct');
+            triggerGamingAlert(isRtl ? 'تم تخطي السؤال!' : 'Question skipped!', 'success');
+          } else {
+            triggerGamingAlert(isRtl ? 'فشل تخطي السؤال!' : 'Failed to skip question!', 'error');
+          }
+        } else {
+          nextQuestion();
+        }
+      }, 1000);
+      return;
     }
 
     // Client-side execution
@@ -8100,6 +8118,21 @@ Each object in the array must strictly match the following JSON structure:
           50% { box-shadow: 0 0 18px rgba(255, 215, 0, 0.8); border-color: rgba(255, 215, 0, 0.9); }
           100% { box-shadow: 0 0 4px rgba(255, 215, 0, 0.3); border-color: rgba(255, 215, 0, 0.2); }
         }
+        @keyframes purplePulse {
+          0% { box-shadow: 0 0 4px rgba(138, 43, 226, 0.3); border-color: rgba(138, 43, 226, 0.2); }
+          50% { box-shadow: 0 0 18px rgba(138, 43, 226, 0.8); border-color: rgba(138, 43, 226, 0.9); }
+          100% { box-shadow: 0 0 4px rgba(138, 43, 226, 0.3); border-color: rgba(138, 43, 226, 0.2); }
+        }
+        @keyframes yellowPulse {
+          0% { box-shadow: 0 0 4px rgba(255, 204, 0, 0.3); border-color: rgba(255, 204, 0, 0.2); }
+          50% { box-shadow: 0 0 18px rgba(255, 204, 0, 0.8); border-color: rgba(255, 204, 0, 0.9); }
+          100% { box-shadow: 0 0 4px rgba(255, 204, 0, 0.3); border-color: rgba(255, 204, 0, 0.2); }
+        }
+        @keyframes chevronFly {
+          0% { transform: scale(0.2); opacity: 0; filter: blur(4px); }
+          50% { transform: scale(1.2); opacity: 1; filter: blur(0px); }
+          100% { transform: scale(2.2); opacity: 0; filter: blur(6px); }
+        }
         @keyframes pulseGlow {
           0% { transform: scale(1); opacity: 0.7; }
           50% { transform: scale(1.1); opacity: 1; }
@@ -9696,6 +9729,34 @@ Each object in the array must strictly match the following JSON structure:
 
           return (
             <div style={styles.screenContainer}>
+              {/* SKIP QUESTION SCREEN OVERLAY */}
+              {activePowerUps.includes('SKIP_QUESTION') && (
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  backgroundColor: 'rgba(11, 13, 26, 0.65)',
+                  backdropFilter: 'blur(4px)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 200,
+                  pointerEvents: 'auto',
+                  borderRadius: '12px',
+                  overflow: 'hidden'
+                }}>
+                  <div style={{
+                    fontSize: '5rem',
+                    animation: 'chevronFly 1s ease-out forwards',
+                    pointerEvents: 'none'
+                  }}>
+                    ⏭️
+                  </div>
+                </div>
+              )}
+
               {/* FREEZE POWER-UP SCREEN OVERLAY */}
               {activePowerUps.includes('FREEZE') && (
                 <>
@@ -9901,6 +9962,23 @@ Each object in the array must strictly match the following JSON structure:
                   <span>{isRtl ? 'السؤال' : 'Question'} <strong style={{ color: '#ffffff' }}>{currentQIndex + 1} / {gameQuestions.length}</strong></span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {activePowerUps.includes('POINT_MULTIPLIER') && (
+                    <span style={{
+                      backgroundColor: 'rgba(138, 43, 226, 0.25)',
+                      border: '1px solid #8a2be2',
+                      borderRadius: '4px',
+                      padding: '1px 6px',
+                      fontSize: '0.7rem',
+                      fontWeight: 800,
+                      color: '#bf5af2',
+                      animation: 'pulseGlow 1.5s infinite',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '2px'
+                    }}>
+                      ✨ 1.5x
+                    </span>
+                  )}
                   <span style={{ color: '#00ff87' }}>+{gameMode === 'PRACTICE' ? 50 : 100} {isRtl ? 'صحيح' : 'Correct'}</span>
                   <span style={{ color: '#ff3b5c' }}>-{gameMode === 'PRACTICE' ? 20 : 30} {isRtl ? 'خطأ' : 'Wrong'}</span>
                 </div>
@@ -9948,7 +10026,19 @@ Each object in the array must strictly match the following JSON structure:
 
               <div style={styles.questionZone}>
                 <div style={styles.qHeaderRow}>
-                  <span style={styles.categoryBadge}>{gameQuestions[currentQIndex].category}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={styles.categoryBadge}>{gameQuestions[currentQIndex].category}</span>
+                    {activePowerUps.includes('REVEAL_HINT') && (
+                      <span style={{
+                        fontSize: '1rem',
+                        animation: 'pulseGlow 1.5s infinite',
+                        color: '#ffcc00',
+                        cursor: 'help'
+                      }} title={isRtl ? 'مساعد التلميح نشط' : 'Reveal Hint Active'}>
+                        💡
+                      </span>
+                    )}
+                  </div>
                   <span style={styles.difficultyBadge}>{gameQuestions[currentQIndex].difficulty}</span>
                 </div>
                 
@@ -9982,10 +10072,35 @@ Each object in the array must strictly match the following JSON structure:
                   <div style={styles.mcqGrid}>
                     {shuffledOptions.map((opt, optIndex) => {
                       const letter = String.fromCharCode(65 + optIndex); // A, B, C, D...
+                      const isOptionHidden = hiddenOptions.includes(opt.id);
+                      const hasJoker = activePowerUps.includes('JOKER');
+                      const hasMultiplier = activePowerUps.includes('POINT_MULTIPLIER');
+                      const hasHint = activePowerUps.includes('REVEAL_HINT') && !isOptionHidden;
+
+                      const optionAnimation = hasJoker
+                        ? 'goldPulse 1.5s infinite'
+                        : hasMultiplier
+                          ? 'purplePulse 1.5s infinite'
+                          : hasHint
+                            ? 'yellowPulse 1.5s infinite'
+                            : 'none';
+
+                      const optionBorderColor = selectedOption === opt.id
+                        ? '#00f2fe'
+                        : hasJoker
+                          ? '#ffd700'
+                          : hasMultiplier
+                            ? '#8a2be2'
+                            : hasHint
+                              ? '#ffcc00'
+                              : 'rgba(255, 255, 255, 0.08)';
+
+                      const optionBorderWidth = (hasJoker || hasMultiplier || hasHint) ? '1.5px' : '1px';
+
                       return (
                         <button
                           key={opt.id}
-                          disabled={isInputDisabled || hiddenOptions.includes(opt.id)}
+                          disabled={isInputDisabled || isOptionHidden}
                           onClick={() => {
                             playSFX('click');
                             setSelectedOption(opt.id);
@@ -9999,19 +10114,24 @@ Each object in the array must strictly match the following JSON structure:
                           }}
                           style={{
                             ...styles.answerCardBtn,
-                            borderColor: selectedOption === opt.id ? '#00f2fe' : 'rgba(255, 255, 255, 0.08)',
+                            borderColor: optionBorderColor,
+                            borderWidth: optionBorderWidth,
+                            animation: optionAnimation,
                             backgroundColor: selectedOption === opt.id ? 'rgba(0, 242, 254, 0.08)' : 'rgba(17, 19, 31, 0.65)',
-                            opacity: hiddenOptions.includes(opt.id) ? 0.25 : 1,
-                            cursor: hiddenOptions.includes(opt.id) ? 'not-allowed' : 'pointer',
+                            opacity: isOptionHidden ? 0.25 : 1,
+                            cursor: isOptionHidden ? 'not-allowed' : 'pointer',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'space-between',
-                            width: '100%'
+                            width: '100%',
+                            transition: 'all 0.3s ease'
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={styles.optLetterBadge}>{letter}</span>
-                            <span style={styles.optText}>{getLocalizedText(opt.text)}</span>
+                            <span style={styles.optText}>
+                              {getLocalizedText(opt.text)} {hasJoker && '✨'} {hasMultiplier && '🔮'} {hasHint && '💡'}
+                            </span>
                           </div>
                           {bt === 'TEAM_CONSULTATION' && teammateVotes[opt.id]?.length > 0 && (
                             <div style={{
@@ -10035,90 +10155,146 @@ Each object in the array must strictly match the following JSON structure:
 
                 {gameQuestions[currentQIndex].type === 'TRUE_FALSE' && (
                   <div style={styles.tfStack}>
-                    <button
-                      disabled={isInputDisabled || hiddenOptions.includes('true')}
-                      onClick={() => {
-                        playSFX('click');
-                        setSelectedOption('true');
-                        if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
-                          const selfId = user?.id;
-                          const activeParts = gameSyncRef.current.activeParticipants || [];
-                          const selfPart = activeParts.find(p => p.userId === selfId);
-                          const myTeamId = selfPart?.teamId || null;
-                          gameSyncRef.current.sendChatMessage('__VOTE__:true', myTeamId);
-                        }
-                      }}
-                      style={{
-                        ...styles.tfCardBtn,
-                        borderColor: selectedOption === 'true' ? '#00ff87' : activePowerUps.includes('JOKER') ? '#ffd700' : 'rgba(255, 255, 255, 0.08)',
-                        backgroundColor: selectedOption === 'true' ? 'rgba(0, 255, 135, 0.08)' : 'rgba(17, 19, 31, 0.65)',
-                        opacity: hiddenOptions.includes('true') ? 0.25 : 1,
-                        cursor: hiddenOptions.includes('true') ? 'not-allowed' : 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '4px',
-                        animation: activePowerUps.includes('JOKER') ? 'goldPulse 1.5s infinite' : 'none',
-                        borderWidth: activePowerUps.includes('JOKER') ? '1.5px' : '1px',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      <span>✓ TRUE / صحيح {activePowerUps.includes('JOKER') && '✨'}</span>
-                      {bt === 'TEAM_CONSULTATION' && teammateVotes['true']?.length > 0 && (
-                        <div style={{
-                          fontSize: '0.75rem',
-                          backgroundColor: 'rgba(0, 255, 135, 0.2)',
-                          padding: '2px 8px',
-                          borderRadius: '10px',
-                          color: '#00ff87'
-                        }}>
-                          👥 {teammateVotes['true'].length} ({teammateVotes['true'].join(', ')})
-                        </div>
-                      )}
-                    </button>
-                    <button
-                      disabled={isInputDisabled || hiddenOptions.includes('false')}
-                      onClick={() => {
-                        playSFX('click');
-                        setSelectedOption('false');
-                        if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
-                          const selfId = user?.id;
-                          const activeParts = gameSyncRef.current.activeParticipants || [];
-                          const selfPart = activeParts.find(p => p.userId === selfId);
-                          const myTeamId = selfPart?.teamId || null;
-                          gameSyncRef.current.sendChatMessage('__VOTE__:false', myTeamId);
-                        }
-                      }}
-                      style={{
-                        ...styles.tfCardBtn,
-                        borderColor: selectedOption === 'false' ? '#ff3b5c' : activePowerUps.includes('JOKER') ? '#ffd700' : 'rgba(255, 255, 255, 0.08)',
-                        backgroundColor: selectedOption === 'false' ? 'rgba(255, 59, 92, 0.08)' : 'rgba(17, 19, 31, 0.65)',
-                        opacity: hiddenOptions.includes('false') ? 0.25 : 1,
-                        cursor: hiddenOptions.includes('false') ? 'not-allowed' : 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '4px',
-                        animation: activePowerUps.includes('JOKER') ? 'goldPulse 1.5s infinite' : 'none',
-                        borderWidth: activePowerUps.includes('JOKER') ? '1.5px' : '1px',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      <span>✕ FALSE / خطأ {activePowerUps.includes('JOKER') && '✨'}</span>
-                      {bt === 'TEAM_CONSULTATION' && teammateVotes['false']?.length > 0 && (
-                        <div style={{
-                          fontSize: '0.75rem',
-                          backgroundColor: 'rgba(255, 59, 92, 0.2)',
-                          padding: '2px 8px',
-                          borderRadius: '10px',
-                          color: '#ff3b5c'
-                        }}>
-                          👥 {teammateVotes['false'].length} ({teammateVotes['false'].join(', ')})
-                        </div>
-                      )}
-                    </button>
+                    {(() => {
+                      const isTrueHidden = hiddenOptions.includes('true');
+                      const isFalseHidden = hiddenOptions.includes('false');
+                      const hasJoker = activePowerUps.includes('JOKER');
+                      const hasMultiplier = activePowerUps.includes('POINT_MULTIPLIER');
+                      const trueHasHint = activePowerUps.includes('REVEAL_HINT') && !isTrueHidden;
+                      const falseHasHint = activePowerUps.includes('REVEAL_HINT') && !isFalseHidden;
+
+                      const trueAnimation = hasJoker
+                        ? 'goldPulse 1.5s infinite'
+                        : hasMultiplier
+                          ? 'purplePulse 1.5s infinite'
+                          : trueHasHint
+                            ? 'yellowPulse 1.5s infinite'
+                            : 'none';
+
+                      const falseAnimation = hasJoker
+                        ? 'goldPulse 1.5s infinite'
+                        : hasMultiplier
+                          ? 'purplePulse 1.5s infinite'
+                          : falseHasHint
+                            ? 'yellowPulse 1.5s infinite'
+                            : 'none';
+
+                      const trueBorderColor = selectedOption === 'true'
+                        ? '#00ff87'
+                        : hasJoker
+                          ? '#ffd700'
+                          : hasMultiplier
+                            ? '#8a2be2'
+                            : trueHasHint
+                              ? '#ffcc00'
+                              : 'rgba(255, 255, 255, 0.08)';
+
+                      const falseBorderColor = selectedOption === 'false'
+                        ? '#ff3b5c'
+                        : hasJoker
+                          ? '#ffd700'
+                          : hasMultiplier
+                            ? '#8a2be2'
+                            : falseHasHint
+                              ? '#ffcc00'
+                              : 'rgba(255, 255, 255, 0.08)';
+
+                      const trueBorderWidth = (hasJoker || hasMultiplier || trueHasHint) ? '1.5px' : '1px';
+                      const falseBorderWidth = (hasJoker || hasMultiplier || falseHasHint) ? '1.5px' : '1px';
+
+                      return (
+                        <>
+                          <button
+                            disabled={isInputDisabled || isTrueHidden}
+                            onClick={() => {
+                              playSFX('click');
+                              setSelectedOption('true');
+                              if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
+                                const selfId = user?.id;
+                                const activeParts = gameSyncRef.current.activeParticipants || [];
+                                const selfPart = activeParts.find(p => p.userId === selfId);
+                                const myTeamId = selfPart?.teamId || null;
+                                gameSyncRef.current.sendChatMessage('__VOTE__:true', myTeamId);
+                              }
+                            }}
+                            style={{
+                              ...styles.tfCardBtn,
+                              borderColor: trueBorderColor,
+                              borderWidth: trueBorderWidth,
+                              backgroundColor: selectedOption === 'true' ? 'rgba(0, 255, 135, 0.08)' : 'rgba(17, 19, 31, 0.65)',
+                              opacity: isTrueHidden ? 0.25 : 1,
+                              cursor: isTrueHidden ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
+                              animation: trueAnimation,
+                              transition: 'all 0.3s ease'
+                            }}
+                          >
+                            <span>
+                              ✓ TRUE / صحيح {hasJoker && '✨'} {hasMultiplier && '🔮'} {trueHasHint && '💡'}
+                            </span>
+                            {bt === 'TEAM_CONSULTATION' && teammateVotes['true']?.length > 0 && (
+                              <div style={{
+                                fontSize: '0.75rem',
+                                backgroundColor: 'rgba(0, 255, 135, 0.2)',
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                color: '#00ff87'
+                              }}>
+                                👥 {teammateVotes['true'].length} ({teammateVotes['true'].join(', ')})
+                              </div>
+                            )}
+                          </button>
+                          <button
+                            disabled={isInputDisabled || isFalseHidden}
+                            onClick={() => {
+                              playSFX('click');
+                              setSelectedOption('false');
+                              if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
+                                const selfId = user?.id;
+                                const activeParts = gameSyncRef.current.activeParticipants || [];
+                                const selfPart = activeParts.find(p => p.userId === selfId);
+                                const myTeamId = selfPart?.teamId || null;
+                                gameSyncRef.current.sendChatMessage('__VOTE__:false', myTeamId);
+                              }
+                            }}
+                            style={{
+                              ...styles.tfCardBtn,
+                              borderColor: falseBorderColor,
+                              borderWidth: falseBorderWidth,
+                              backgroundColor: selectedOption === 'false' ? 'rgba(255, 59, 92, 0.08)' : 'rgba(17, 19, 31, 0.65)',
+                              opacity: isFalseHidden ? 0.25 : 1,
+                              cursor: isFalseHidden ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '4px',
+                              animation: falseAnimation,
+                              transition: 'all 0.3s ease'
+                            }}
+                          >
+                            <span>
+                              ✕ FALSE / خطأ {hasJoker && '✨'} {hasMultiplier && '🔮'} {falseHasHint && '💡'}
+                            </span>
+                            {bt === 'TEAM_CONSULTATION' && teammateVotes['false']?.length > 0 && (
+                              <div style={{
+                                fontSize: '0.75rem',
+                                backgroundColor: 'rgba(255, 59, 92, 0.2)',
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                color: '#ff3b5c'
+                              }}>
+                                👥 {teammateVotes['false'].length} ({teammateVotes['false'].join(', ')})
+                              </div>
+                            )}
+                          </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
 
@@ -10127,8 +10303,20 @@ Each object in the array must strictly match the following JSON structure:
                   gameQuestions[currentQIndex].type === 'SHORT_ANSWER') && (
                   <div style={{
                     ...styles.blankInputWrapper,
-                    animation: activePowerUps.includes('JOKER') ? 'goldPulse 1.5s infinite' : 'none',
-                    border: activePowerUps.includes('JOKER') ? '1.5px solid #ffd700' : '1px solid rgba(255, 255, 255, 0.08)',
+                    animation: activePowerUps.includes('JOKER')
+                      ? 'goldPulse 1.5s infinite'
+                      : activePowerUps.includes('POINT_MULTIPLIER')
+                        ? 'purplePulse 1.5s infinite'
+                        : activePowerUps.includes('REVEAL_HINT')
+                          ? 'yellowPulse 1.5s infinite'
+                          : 'none',
+                    border: activePowerUps.includes('JOKER')
+                      ? '1.5px solid #ffd700'
+                      : activePowerUps.includes('POINT_MULTIPLIER')
+                        ? '1.5px solid #8a2be2'
+                        : activePowerUps.includes('REVEAL_HINT')
+                          ? '1.5px solid #ffcc00'
+                          : '1px solid rgba(255, 255, 255, 0.08)',
                     borderRadius: '8px'
                   }}>
                     <input

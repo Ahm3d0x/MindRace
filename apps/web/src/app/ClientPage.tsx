@@ -10466,8 +10466,6 @@ Each object in the array must strictly match the following JSON structure:
                   </>
                 )}
               </div>
-                )}
-              </div>
             </div>
           );
         })()}

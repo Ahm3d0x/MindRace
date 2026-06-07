@@ -10422,21 +10422,56 @@ Each object in the array must strictly match the following JSON structure:
                   <div style={styles.mcqGrid}>
                     {gameQuestions[currentQIndex].options?.map((opt) => {
                       const isSelected = (selectedOption || []).includes(opt.id);
+                      const isOptionHidden = hiddenOptions.includes(opt.id);
+                      const hasJoker = activePowerUps.includes('JOKER');
+                      const hasMultiplier = activePowerUps.includes('POINT_MULTIPLIER');
+                      const hasHint = activePowerUps.includes('REVEAL_HINT') && !isOptionHidden;
+
+                      const optionAnimation = hasJoker
+                        ? 'goldPulse 1.5s infinite'
+                        : hasMultiplier
+                          ? 'purplePulse 1.5s infinite'
+                          : hasHint
+                            ? 'yellowPulse 1.5s infinite'
+                            : 'none';
+
+                      const optionBorderColor = isSelected
+                        ? '#00f2fe'
+                        : hasJoker
+                          ? '#ffd700'
+                          : hasMultiplier
+                            ? '#8a2be2'
+                            : hasHint
+                              ? '#ffcc00'
+                              : 'rgba(255, 255, 255, 0.08)';
+
+                      const optionBorderWidth = (hasJoker || hasMultiplier || hasHint) ? '1.5px' : '1px';
+
                       return (
                         <button
                           key={opt.id}
-                          disabled={isInputDisabled}
+                          disabled={isInputDisabled || isOptionHidden}
                           onClick={() => toggleMultiSelect(opt.id)}
                           style={{
                             ...styles.answerCardBtn,
-                            borderColor: isSelected ? '#00f2fe' : 'rgba(255, 255, 255, 0.08)',
-                            backgroundColor: isSelected ? 'rgba(0, 242, 254, 0.08)' : 'rgba(17, 19, 31, 0.65)'
+                            borderColor: optionBorderColor,
+                            borderWidth: optionBorderWidth,
+                            animation: optionAnimation,
+                            backgroundColor: isSelected ? 'rgba(0, 242, 254, 0.08)' : 'rgba(17, 19, 31, 0.65)',
+                            opacity: isOptionHidden ? 0.25 : 1,
+                            cursor: isOptionHidden ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            width: '100%',
+                            transition: 'all 0.3s ease'
                           }}
                         >
                           <span style={styles.optLetterBadge}>
                             {isSelected ? '✓' : opt.id.toUpperCase()}
                           </span>
-                          <span style={styles.optText}>{getLocalizedText(opt.text)}</span>
+                          <span style={styles.optText}>
+                            {getLocalizedText(opt.text)} {hasJoker && '✨'} {hasMultiplier && '🔮'} {hasHint && '💡'}
+                          </span>
                         </button>
                       );
                     })}

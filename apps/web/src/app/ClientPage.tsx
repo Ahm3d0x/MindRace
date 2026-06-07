@@ -8,11 +8,10 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '../lib/supabase';
 import { io, Socket } from 'socket.io-client';
 import { RankBadge } from '../components/RankBadge';
-import { PlayerProfileModal, BADGES_METADATA } from '../components/PlayerProfileModal';
-import { CosmeticShopModal } from '../components/CosmeticShopModal';
+import { PlayerProfileView, BADGES_METADATA } from '../components/PlayerProfileView';
+import { PlayerStoreView } from '../components/PlayerStoreView';
 import { QuestsPanel } from '../components/QuestsPanel';
 import { SeasonTrackerPanel } from '../components/SeasonTrackerPanel';
-import { SettingsModal } from '../components/SettingsModal';
 import { getDeviceFingerprint } from '../lib/fingerprint';
 import { AdminModerationModal } from '../components/AdminModerationModal';
 import { OnboardingTutorial } from '../components/OnboardingTutorial';
@@ -652,7 +651,12 @@ export default function ClientPage() {
   const router = useRouter();
 
   const [isRtl, setIsRtl] = useState(false);
-  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [viewingProfile, setViewingProfile] = useState(false);
+  const [viewingStore, setViewingStore] = useState(false);
+  const [backpackSubTab, setBackpackSubTab] = useState<'items' | 'packs'>('items');
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const [activeTooltip, setActiveTooltip] = useState<'db' | 'realtime' | null>(null);
   const [activeSeason, setActiveSeason] = useState<any>(null);
   const [daysRemaining, setDaysRemaining] = useState<number>(0);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
@@ -660,7 +664,6 @@ export default function ClientPage() {
   // Audio settings states
   const [sfxEnabled, setSfxEnabled] = useState<boolean>(true);
   const [sfxVolume, setSfxVolume] = useState<number>(0.7);
-  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isTournamentMatch, setIsTournamentMatch] = useState<boolean>(false);
   const [matchStartRP, setMatchStartRP] = useState<number>(0);
   const [matchStartBadges, setMatchStartBadges] = useState<string[]>([]);
@@ -2130,6 +2133,7 @@ export default function ClientPage() {
         if (!error) {
           setApiStatus('online');
           setLatency(Date.now() - startTime);
+          setLastSyncTime(new Date());
         } else {
           setApiStatus('offline');
         }
@@ -2160,6 +2164,7 @@ export default function ClientPage() {
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setSocketStatus('connected');
+        setLastSyncTime(new Date());
       } else if (status === 'CHANNEL_ERROR' || status === 'CLOSED') {
         setSocketStatus('disconnected');
       } else {
@@ -3688,13 +3693,7 @@ export default function ClientPage() {
             </form>
           </div>
           
-          <div style={styles.bottomNavMock}>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingTournament(false); setViewingTournaments(false); }}>🎒</span>
-            <span>🛒</span>
-            <span>⚔️</span>
-            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingTournament(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
-          </div>
+          {renderBottomNav('kingdom')}
         </div>
       );
     }
@@ -4086,13 +4085,7 @@ export default function ClientPage() {
             )}
           </div>
 
-          <div style={styles.bottomNavMock}>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedTournament(null); setViewingTournaments(false); }}>🎒</span>
-            <span>🛒</span>
-            <span>⚔️</span>
-            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedTournament(null); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
-          </div>
+          {renderBottomNav('kingdom')}
         </div>
       );
     }
@@ -4179,13 +4172,7 @@ export default function ClientPage() {
           </div>
         </div>
 
-        <div style={styles.bottomNavMock}>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingTournaments(false); setViewingPacks(false); }}>🎒</span>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingTournaments(false); setViewingPacks(true); fetchPacks(); }}>📦</span>
-          <span>⚔️</span>
-          <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>🏰</span>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingTournaments(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
-        </div>
+        {renderBottomNav('kingdom')}
       </div>
     );
   };
@@ -4782,7 +4769,7 @@ Each object in the array must strictly match the following JSON structure:
     }
   }
 
-  const renderPacksView = () => {
+  const renderBackpackView = () => {
     if (creatingPack) {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
@@ -5254,13 +5241,7 @@ Each object in the array must strictly match the following JSON structure:
             </form>
           </div>
 
-          <div style={styles.bottomNavMock}>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingPacks(false); }}>🎒</span>
-            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>📦</span>
-            <span>⚔️</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingTournaments(true); fetchTournaments(); }}>🏰</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
-          </div>
+          {renderBottomNav('backpack')}
         </div>
       );
     }
@@ -6451,13 +6432,7 @@ Each object in the array must strictly match the following JSON structure:
             </div>
           </div>
 
-          <div style={styles.bottomNavMock}>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedPack(null); setViewingPacks(false); }}>🎒</span>
-            <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={() => { setSelectedPack(null); fetchPacks(); }}>📦</span>
-            <span>⚔️</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedPack(null); setViewingTournaments(true); fetchTournaments(); }}>🏰</span>
-            <span style={{ cursor: 'pointer' }} onClick={() => { setSelectedPack(null); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
-          </div>
+          {renderBottomNav('backpack')}
         </div>
       );
     }
@@ -6468,145 +6443,193 @@ Each object in the array must strictly match the following JSON structure:
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexShrink: 0 }}>
-            <div>
-              <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
-                {isRtl ? 'حزم الأسئلة المخصصة' : 'Question Packs'}
-              </h2>
-              <span style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
-                {isRtl ? 'إنشاء ولعب وتقييم حزم الأسئلة' : 'Create, play, and rate question pools'}
-              </span>
-            </div>
+          {/* Sub-tabs at the top of the Backpack screen */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', flexShrink: 0 }}>
             <button
-              onClick={() => { playSFX('click'); setCreatingPack(true); }}
+              onClick={() => { playSFX('click'); setBackpackSubTab('items'); }}
               style={{
-                padding: '6px 12px',
-                background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
-                color: '#05060f',
+                flex: 1,
+                padding: '8px 10px',
+                borderRadius: '8px',
+                border: backpackSubTab === 'items' ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.05)',
+                background: backpackSubTab === 'items' ? 'rgba(0, 242, 254, 0.12)' : 'rgba(255,255,255,0.02)',
+                color: backpackSubTab === 'items' ? '#00f2fe' : '#8a93c0',
+                fontSize: '0.8rem',
                 fontWeight: 'bold',
-                border: 'none',
-                borderRadius: '6px',
-                fontSize: '0.75rem',
                 cursor: 'pointer',
-                boxShadow: '0 2px 8px rgba(0, 242, 254, 0.2)'
+                transition: 'all 0.15s ease'
               }}
             >
-              ➕ {isRtl ? 'إنشاء حزمة' : 'Create Pack'}
+              🎒 {isRtl ? 'حقيبتي' : 'My Cosmetics'}
+            </button>
+            <button
+              onClick={() => { playSFX('click'); setBackpackSubTab('packs'); }}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                borderRadius: '8px',
+                border: backpackSubTab === 'packs' ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.05)',
+                background: backpackSubTab === 'packs' ? 'rgba(0, 242, 254, 0.12)' : 'rgba(255,255,255,0.02)',
+                color: backpackSubTab === 'packs' ? '#00f2fe' : '#8a93c0',
+                fontSize: '0.8rem',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              📦 {isRtl ? 'حزم الأسئلة' : 'Question Packs'}
             </button>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1, overflowY: 'auto', paddingRight: '4px', minHeight: 0 }}>
-            {loadingPacks ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: '#00f2fe', fontSize: '0.85rem' }}>
-                {isRtl ? 'جاري تحميل الحزم...' : 'Loading packs...'}
+          {backpackSubTab === 'items' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+              <div style={{ marginBottom: '10px', flexShrink: 0 }}>
+                <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                  {isRtl ? 'المظاهر الممتلكة' : 'Owned Cosmetics'}
+                </h2>
+                <span style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
+                  {isRtl ? 'قم بتجهيز إطارات الصور وتأثيرات الإجابة' : 'Equip your custom borders and answer effects'}
+                </span>
               </div>
-            ) : (
-              <>
+              {renderOwnedItems()}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexShrink: 0 }}>
                 <div>
-                  <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#ffd700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    🌎 {isRtl ? 'حزم عامة للاستكشاف' : 'Explore Public Packs'}
-                  </h4>
-              {publicPacks.length === 0 ? (
-                <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-                  {isRtl ? 'لا توجد حزم عامة منشورة حاليًا.' : 'No public packs available yet.'}
+                  <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                    {isRtl ? 'حزم الأسئلة المخصصة' : 'Question Packs'}
+                  </h2>
+                  <span style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
+                    {isRtl ? 'إنشاء ولعب وتقييم حزم الأسئلة' : 'Create, play, and rate question pools'}
+                  </span>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {publicPacks.map((pack) => (
-                    <div
-                      key={pack.id}
-                      onClick={() => fetchPackDetails(pack.id)}
-                      style={{
-                        padding: '12px',
-                        backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                        border: '1px solid rgba(255, 255, 255, 0.05)',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px'
-                      }}
-                      className="hover-card-neon"
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold', backgroundColor: 'rgba(0, 242, 254, 0.08)', padding: '2px 6px', borderRadius: '4px' }}>
-                          {pack.category}
-                        </span>
-                        <span style={{ fontSize: '0.7rem', color: '#ffb300' }}>
-                          ⭐ {pack.ratingAvg?.toFixed(1) || '0.0'} ({pack.ratingCount})
-                        </span>
-                      </div>
-                      <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
-                      <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{getLocalizedText(pack.description)}</p>
-                      <span style={{ fontSize: '0.65rem', color: '#8a93c0', marginTop: '2px' }}>
-                        ✍️ {isRtl ? 'المنشئ:' : 'Creator:'} <strong style={{ color: '#ffffff' }}>{pack.creatorUsername}</strong>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                <button
+                  onClick={() => { playSFX('click'); setCreatingPack(true); }}
+                  style={{
+                    padding: '6px 12px',
+                    background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+                    color: '#05060f',
+                    fontWeight: 'bold',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 8px rgba(0, 242, 254, 0.2)'
+                  }}
+                >
+                  ➕ {isRtl ? 'إنشاء حزمة' : 'Create Pack'}
+                </button>
+              </div>
 
-            <div style={{ marginTop: '10px' }}>
-              <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#00ff87', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                📦 {isRtl ? 'حزمي الخاصة' : 'My Packs'}
-              </h4>
-              {privatePacks.length === 0 && packs.filter(p => p.creatorId === user?.id && p.isPublic).length === 0 ? (
-                <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-                  {isRtl ? 'لم تقم بإنشاء أي حزم مخصصة بعد.' : 'You have not created any packs yet.'}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {packs.filter(p => p.creatorId === user?.id).map((pack) => (
-                    <div
-                       key={pack.id}
-                      onClick={() => fetchPackDetails(pack.id)}
-                      style={{
-                        padding: '12px',
-                        backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                        border: `1px solid ${pack.isPublic ? 'rgba(0, 255, 135, 0.15)' : 'rgba(255, 59, 92, 0.15)'}`,
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px'
-                      }}
-                      className="hover-card-neon"
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold' }}>
-                          {pack.category}
-                        </span>
-                        <span style={{
-                          fontSize: '0.65rem',
-                          backgroundColor: pack.isPublic ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255, 59, 92, 0.1)',
-                          color: pack.isPublic ? '#00ff87' : '#ff3b5c',
-                          padding: '1px 5px',
-                          borderRadius: '3px',
-                          fontWeight: 'bold'
-                        }}>
-                          {pack.isPublic ? (isRtl ? 'عامة' : 'Public') : (isRtl ? 'خاصة' : 'Private')}
-                        </span>
-                      </div>
-                      <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
-                      <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0' }}>{getLocalizedText(pack.description)}</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1, overflowY: 'auto', paddingRight: '4px', minHeight: 0 }}>
+                {loadingPacks ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#00f2fe', fontSize: '0.85rem' }}>
+                    {isRtl ? 'جاري تحميل الحزم...' : 'Loading packs...'}
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#ffd700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        🌎 {isRtl ? 'حزم عامة للاستكشاف' : 'Explore Public Packs'}
+                      </h4>
+                      {publicPacks.length === 0 ? (
+                        <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+                          {isRtl ? 'لا توجد حزم عامة منشورة حاليًا.' : 'No public packs available yet.'}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {publicPacks.map((pack) => (
+                            <div
+                              key={pack.id}
+                              onClick={() => fetchPackDetails(pack.id)}
+                              style={{
+                                padding: '12px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                                border: '1px solid rgba(255, 255, 255, 0.05)',
+                                borderRadius: '8px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '4px'
+                              }}
+                              className="hover-card-neon"
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold', backgroundColor: 'rgba(0, 242, 254, 0.08)', padding: '2px 6px', borderRadius: '4px' }}>
+                                  {pack.category}
+                                </span>
+                                <span style={{ fontSize: '0.7rem', color: '#ffb300' }}>
+                                  ⭐ {pack.ratingAvg?.toFixed(1) || '0.0'} ({pack.ratingCount})
+                                </span>
+                              </div>
+                              <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
+                              <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{getLocalizedText(pack.description)}</p>
+                              <span style={{ fontSize: '0.65rem', color: '#8a93c0', marginTop: '2px' }}>
+                                ✍️ {isRtl ? 'المنشئ:' : 'Creator:'} <strong style={{ color: '#ffffff' }}>{pack.creatorUsername}</strong>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
 
-        <div style={styles.bottomNavMock}>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingPacks(false); }}>🎒</span>
-          <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={fetchPacks}>📦</span>
-          <span>⚔️</span>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingPacks(false); setViewingTournaments(true); fetchTournaments(); }}>🏰</span>
-          <span style={{ cursor: 'pointer' }} onClick={() => { setViewingPacks(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>🏆</span>
+                    <div style={{ marginTop: '10px' }}>
+                      <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#00ff87', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        📦 {isRtl ? 'حزمي الخاصة' : 'My Packs'}
+                      </h4>
+                      {privatePacks.length === 0 && packs.filter(p => p.creatorId === user?.id && p.isPublic).length === 0 ? (
+                        <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+                          {isRtl ? 'لم تقم بإنشاء أي حزم مخصصة بعد.' : 'You have not created any packs yet.'}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {packs.filter(p => p.creatorId === user?.id).map((pack) => (
+                            <div
+                              key={pack.id}
+                              onClick={() => fetchPackDetails(pack.id)}
+                              style={{
+                                padding: '12px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                                border: `1px solid ${pack.isPublic ? 'rgba(0, 255, 135, 0.15)' : 'rgba(255, 59, 92, 0.15)'}`,
+                                borderRadius: '8px',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '4px'
+                              }}
+                              className="hover-card-neon"
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold' }}>
+                                  {pack.category}
+                                </span>
+                                <span style={{
+                                  fontSize: '0.65rem',
+                                  backgroundColor: pack.isPublic ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255, 59, 92, 0.1)',
+                                  color: pack.isPublic ? '#00ff87' : '#ff3b5c',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontWeight: 'bold'
+                                }}>
+                                  {pack.isPublic ? (isRtl ? 'عامة' : 'Public') : (isRtl ? 'خاصة' : 'Private')}
+                                </span>
+                              </div>
+                              <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
+                              <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0' }}>{getLocalizedText(pack.description)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
+
+        {renderBottomNav('backpack')}
       </div>
     );
   };
@@ -6617,6 +6640,443 @@ Each object in the array must strictly match the following JSON structure:
       fetchPacks();
     }
   }, [screen, currentRoom?.id]);
+
+  // MindRace UI Reorganization helper functions
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const scrollTop = e.currentTarget.scrollTop;
+    if (scrollTop > 20) {
+      setIsHeaderCollapsed(true);
+    } else if (scrollTop <= 5) {
+      setIsHeaderCollapsed(false);
+    }
+  };
+
+  const getRankEmoji = (rankName: string) => {
+    const r = rankName?.toLowerCase() || '';
+    if (r.includes('bronze')) return '🥉';
+    if (r.includes('silver')) return '🥈';
+    if (r.includes('gold')) return '🥇';
+    if (r.includes('platinum')) return '💎';
+    if (r.includes('diamond')) return '🔷';
+    if (r.includes('master') && !r.includes('grand')) return '👑';
+    if (r.includes('grand master')) return '🌟';
+    if (r.includes('legend')) return '🏆';
+    if (r.includes('mythic')) return '🔮';
+    if (r.includes('titan')) return '🌌';
+    return '🎖️';
+  };
+
+  const getDbColor = () => {
+    if (apiStatus !== 'online') return '#ff3b5c'; // Red
+    if (latency === null || latency >= 600) return '#ff9100'; // Orange
+    if (latency >= 300) return '#ffdd00'; // Yellow
+    if (latency >= 150) return '#a2ff00'; // Light Green
+    return '#00ff66'; // Bright Green (Healthy)
+  };
+
+  const getRealtimeColor = () => {
+    if (socketStatus === 'disconnected') return '#ff3b5c'; // Red
+    if (socketStatus === 'connecting') return '#ffdd00'; // Yellow
+    return '#00ff66'; // Bright Green (Healthy)
+  };
+
+  const renderConnectionIndicators = (isCompact = false) => {
+    const dbCol = getDbColor();
+    const rtCol = getRealtimeColor();
+
+    const handleDotClick = (e: React.MouseEvent, type: 'db' | 'realtime') => {
+      e.stopPropagation();
+      playSFX('click');
+      setActiveTooltip(prev => prev === type ? null : type);
+    };
+
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: isCompact ? '6px' : '12px',
+        marginTop: isCompact ? '0px' : '6px',
+        position: 'relative'
+      }}>
+        {/* Database Indicator Dot */}
+        <div 
+          onClick={(e) => handleDotClick(e, 'db')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            cursor: 'pointer',
+            padding: '2px 4px',
+            borderRadius: '4px',
+            backgroundColor: activeTooltip === 'db' ? 'rgba(255,255,255,0.05)' : 'transparent'
+          }}
+          title="Database Status"
+        >
+          <span style={{
+            width: '7px',
+            height: '7px',
+            borderRadius: '50%',
+            backgroundColor: dbCol,
+            boxShadow: `0 0 6px ${dbCol}`,
+            display: 'inline-block'
+          }} />
+          {!isCompact && <span style={{ fontSize: '0.65rem', color: '#8a93c0', fontWeight: 'bold' }}>DB</span>}
+        </div>
+
+        {/* Realtime Indicator Dot */}
+        <div 
+          onClick={(e) => handleDotClick(e, 'realtime')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            cursor: 'pointer',
+            padding: '2px 4px',
+            borderRadius: '4px',
+            backgroundColor: activeTooltip === 'realtime' ? 'rgba(255,255,255,0.05)' : 'transparent'
+          }}
+          title="Realtime Service Status"
+        >
+          <span style={{
+            width: '7px',
+            height: '7px',
+            borderRadius: '50%',
+            backgroundColor: rtCol,
+            boxShadow: `0 0 6px ${rtCol}`,
+            display: 'inline-block'
+          }} />
+          {!isCompact && <span style={{ fontSize: '0.65rem', color: '#8a93c0', fontWeight: 'bold' }}>RT</span>}
+        </div>
+
+        {/* Tooltip Popup Box */}
+        {activeTooltip && (
+          <div 
+            style={{
+              position: 'absolute',
+              bottom: isCompact ? '20px' : '22px',
+              right: isCompact ? '-40px' : 'auto',
+              zIndex: 999,
+              width: '160px',
+              backgroundColor: 'rgba(15, 18, 30, 0.98)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '8px',
+              padding: '10px',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.6)',
+              textAlign: isRtl ? 'right' : 'left',
+              backdropFilter: 'blur(10px)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {activeTooltip === 'db' ? (
+              <>
+                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '4px' }}>
+                  {isRtl ? 'قاعدة البيانات' : 'Database'}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: '#ffffff', marginBottom: '2px' }}>
+                  {isRtl ? 'الحالة:' : 'Status:'}{' '}
+                  <span style={{ color: dbCol, fontWeight: 'bold' }}>
+                    {apiStatus === 'online' ? (isRtl ? 'متصل' : 'Connected') : (isRtl ? 'غير متصل' : 'Offline')}
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
+                  {isRtl ? 'الاستجابة:' : 'Latency:'}{' '}
+                  <span style={{ color: '#ffffff' }}>
+                    {apiStatus === 'online' && latency !== null ? `${latency}ms` : 'N/A'}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '4px' }}>
+                  {isRtl ? 'الاتصال الفوري' : 'Realtime'}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: '#ffffff', marginBottom: '2px' }}>
+                  {isRtl ? 'الحالة:' : 'Status:'}{' '}
+                  <span style={{ color: rtCol, fontWeight: 'bold' }}>
+                    {socketStatus === 'connected' 
+                      ? (isRtl ? 'متصل' : 'Connected') 
+                      : socketStatus === 'connecting' 
+                        ? (isRtl ? 'جاري الاتصال' : 'Connecting') 
+                        : (isRtl ? 'غير متصل' : 'Offline')}
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
+                  {isRtl ? 'المزامنة:' : 'Sync:'}{' '}
+                  <span style={{ color: '#ffffff' }}>
+                    {lastSyncTime ? `${Math.round((Date.now() - lastSyncTime.getTime()) / 1000)}s ${isRtl ? 'مضت' : 'ago'}` : (isRtl ? 'لا يوجد' : 'Never')}
+                  </span>
+                </div>
+              </>
+            )}
+            
+            <button 
+              onClick={() => setActiveTooltip(null)}
+              style={{
+                position: 'absolute',
+                top: '4px',
+                right: isRtl ? 'auto' : '4px',
+                left: isRtl ? '4px' : 'auto',
+                background: 'none',
+                border: 'none',
+                color: '#8a93c0',
+                cursor: 'pointer',
+                fontSize: '0.65rem'
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const handleEquipBackpackItem = async (key: string, category: 'border' | 'effect', isEquipped: boolean) => {
+    playSFX('click');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      const res = await fetch(`${API_URL}/api/v1/store/equip`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          category, 
+          key: isEquipped ? null : key 
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Equip failed');
+      }
+
+      triggerGamingAlert(
+        isRtl 
+          ? (isEquipped ? 'تم إلغاء التجهيز' : 'تم التجهيز بنجاح!') 
+          : (isEquipped ? 'Unequipped item' : 'Equipped successfully!'), 
+        'success'
+      );
+      await refreshProfile();
+    } catch (err: any) {
+      playSFX('wrong');
+      triggerGamingAlert(err.message || 'Error occurred', 'error');
+    }
+  };
+
+  const COSMETICS_CATALOG = [
+    {
+      key: 'cyber_neon',
+      name: { en: 'Cyber Neon Border', ar: 'إطار النيون السيبراني' },
+      desc: { en: 'A vibrant glowing cyan avatar border.', ar: 'إطار رمز تعبيري متوهج باللون السماوي النابض بالحياة.' },
+      category: 'border' as const,
+      preview: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)'
+    },
+    {
+      key: 'gold_halo',
+      name: { en: 'Gold Halo Border', ar: 'إطار الهالة الذهبية' },
+      desc: { en: 'A rotating premium golden border.', ar: 'إطار ذهبي مميز مع هالة متوهجة.' },
+      category: 'border' as const,
+      preview: 'linear-gradient(135deg, #ffd700 0%, #fbbf24 100%)'
+    },
+    {
+      key: 'dark_matter',
+      name: { en: 'Dark Matter Border', ar: 'إطار المادة المظلمة' },
+      desc: { en: 'A deep dark obsidian pulsing border.', ar: 'إطار داكن بنمط نبضات المادة المظلمة الغامضة.' },
+      category: 'border' as const,
+      preview: 'linear-gradient(135deg, #8b5cf6 0%, #090d16 100%)'
+    },
+    {
+      key: 'laser_strike',
+      name: { en: 'Laser Strike Effect', ar: 'تأثير ضربة الليزر' },
+      desc: { en: 'A clean green/cyan laser sweep across the deck.', ar: 'مسح ضوئي ليزر أخضر وسماوي على البطاقة عند الإجابة الصحيحة.' },
+      category: 'effect' as const,
+      preview: '⚡'
+    },
+    {
+      key: 'firework',
+      name: { en: 'Firework Effect', ar: 'تأثير الألعاب النارية' },
+      desc: { en: 'Celebratory colorful sparkle bursts.', ar: 'انفجارات ملونة واحتفالية مبهرة عند الإجابة الصحيحة.' },
+      category: 'effect' as const,
+      preview: '🎆'
+    },
+    {
+      key: 'matrix_rain',
+      name: { en: 'Matrix Rain Effect', ar: 'تأثير مطر الماتريكس' },
+      desc: { en: 'Digital falling green code matrix sweep.', ar: 'شفرات رقمية خضراء متساقطة عند الإجابة الصحيحة.' },
+      category: 'effect' as const,
+      preview: '💻'
+    }
+  ];
+
+  const renderOwnedItems = () => {
+    const owned = COSMETICS_CATALOG.filter(item => user?.inventory?.includes(item.key));
+    const equipped = user?.equipped || { border: null, effect: null };
+
+    if (owned.length === 0) {
+      return (
+        <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8a93c0', fontSize: '0.85rem' }}>
+          {isRtl ? 'حقيبتك فارغة. قم بشراء مظهر من المتجر لتجهيزه!' : 'Your backpack is empty. Buy cosmetics from the store to equip them!'}
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {owned.map((item) => {
+          const isEquipped = equipped[item.category] === item.key;
+          return (
+            <div key={item.key} style={{ display: 'flex', alignItems: 'center', padding: '10px 14px', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', gap: '12px' }}>
+              <div style={{ width: '50px', height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 0, 0, 0.25)', borderRadius: '8px' }}>
+                {item.category === 'border' ? (
+                  <div style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '50%',
+                    border: '2px solid transparent',
+                    backgroundImage: `linear-gradient(rgba(15,18,30,1), rgba(15,18,30,1)), ${item.preview}`,
+                    backgroundOrigin: 'border-box',
+                    backgroundClip: 'padding-box, border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '1.2rem'
+                  }}>
+                    👤
+                  </div>
+                ) : (
+                  <span style={{ fontSize: '1.8rem' }}>{item.preview}</span>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h4 style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ffffff', margin: '0 0 2px 0' }}>
+                  {isRtl ? item.name.ar : item.name.en}
+                </h4>
+                <p style={{ fontSize: '0.65rem', color: '#8a93c0', margin: 0 }}>
+                  {isRtl ? item.desc.ar : item.desc.en}
+                </p>
+              </div>
+              <button
+                onClick={() => handleEquipBackpackItem(item.key, item.category, isEquipped)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '6px',
+                  fontSize: '0.75rem',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  border: isEquipped ? '1px solid rgba(255, 59, 92, 0.3)' : 'none',
+                  background: isEquipped ? 'rgba(255, 59, 92, 0.15)' : 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+                  color: '#ffffff',
+                  minWidth: '75px'
+                }}
+              >
+                {isEquipped ? (isRtl ? 'إلغاء' : 'Unequip') : (isRtl ? 'تجهيز' : 'Equip')}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderBottomNav = (activeTab: 'backpack' | 'store' | 'arena' | 'kingdom' | 'leaderboard') => {
+    return (
+      <div style={styles.bottomNavMock}>
+        <span 
+          style={{ cursor: 'pointer', ...(activeTab === 'backpack' ? styles.activeNavTab : {}) }} 
+          onClick={() => {
+            playSFX('click');
+            setViewingProfile(false);
+            setViewingLeaderboard(false);
+            setViewingTournaments(false);
+            setViewingStore(false);
+            setViewingPacks(true);
+            setCreatingPack(false);
+            setSelectedPack(null);
+            setCreatingTournament(false);
+            setSelectedTournament(null);
+            fetchPacks();
+          }}
+        >
+          🎒
+        </span>
+        <span 
+          style={{ cursor: 'pointer', ...(activeTab === 'store' ? styles.activeNavTab : {}) }} 
+          onClick={() => {
+            playSFX('click');
+            setViewingProfile(false);
+            setViewingLeaderboard(false);
+            setViewingTournaments(false);
+            setViewingPacks(false);
+            setViewingStore(true);
+            setCreatingPack(false);
+            setSelectedPack(null);
+            setCreatingTournament(false);
+            setSelectedTournament(null);
+          }}
+        >
+          🛒
+        </span>
+        <span 
+          style={{ cursor: 'pointer', ...(activeTab === 'arena' ? styles.activeNavTab : {}) }} 
+          onClick={() => {
+            playSFX('click');
+            setViewingProfile(false);
+            setViewingLeaderboard(false);
+            setViewingTournaments(false);
+            setViewingPacks(false);
+            setViewingStore(false);
+            setCreatingPack(false);
+            setSelectedPack(null);
+            setCreatingTournament(false);
+            setSelectedTournament(null);
+          }}
+        >
+          ⚔️
+        </span>
+        <span 
+          style={{ cursor: 'pointer', ...(activeTab === 'kingdom' ? styles.activeNavTab : {}) }} 
+          onClick={() => {
+            playSFX('click');
+            setViewingProfile(false);
+            setViewingLeaderboard(false);
+            setViewingTournaments(true);
+            setViewingPacks(false);
+            setViewingStore(false);
+            setCreatingPack(false);
+            setSelectedPack(null);
+            setCreatingTournament(false);
+            setSelectedTournament(null);
+            fetchTournaments();
+          }}
+        >
+          🏰
+        </span>
+        <span 
+          style={{ cursor: 'pointer', ...(activeTab === 'leaderboard' ? styles.activeNavTab : {}) }} 
+          onClick={() => {
+            playSFX('click');
+            setViewingProfile(false);
+            setViewingLeaderboard(true);
+            setViewingTournaments(false);
+            setViewingPacks(false);
+            setViewingStore(false);
+            setCreatingPack(false);
+            setSelectedPack(null);
+            setCreatingTournament(false);
+            setSelectedTournament(null);
+            loadLeaderboardData();
+          }}
+        >
+          🏆
+        </span>
+      </div>
+    );
+  };
 
   const t = isRtl ? text.ar : text.en;
 
@@ -6836,7 +7296,37 @@ Each object in the array must strictly match the following JSON structure:
         {/* SCREEN: HOME DASHBOARD */}
         {screen === 'dashboard' && (
           <div style={styles.screenContainer}>
-            {viewingLeaderboard ? (
+            {viewingProfile ? (
+              user && (
+                <PlayerProfileView
+                  user={user as any}
+                  onClose={() => setViewingProfile(false)}
+                  isRtl={isRtl}
+                  setIsRtl={setIsRtl}
+                  sfxEnabled={sfxEnabled}
+                  setSfxEnabled={setSfxEnabled}
+                  sfxVolume={sfxVolume}
+                  setSfxVolume={setSfxVolume}
+                  playSFX={playSFX}
+                  signOut={signOut}
+                  refreshProfile={refreshProfile}
+                  triggerAlert={triggerGamingAlert}
+                />
+              )
+            ) : viewingStore ? (
+              user && (
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+                  <PlayerStoreView
+                    user={user as any}
+                    isRtl={isRtl}
+                    refreshProfile={refreshProfile}
+                    triggerAlert={triggerGamingAlert}
+                    playSFX={playSFX}
+                  />
+                  {renderBottomNav('store')}
+                </div>
+              )
+            ) : viewingLeaderboard ? (
               <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px' }}>
@@ -6946,18 +7436,12 @@ Each object in the array must strictly match the following JSON structure:
                   </div>
                 </div>
 
-                <div style={styles.bottomNavMock}>
-                  <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(false); setViewingTournaments(false); setViewingPacks(false); }}>🎒</span>
-                  <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(false); setViewingTournaments(false); setViewingPacks(true); fetchPacks(); }}>📦</span>
-                  <span>⚔️</span>
-                  <span style={{ cursor: 'pointer' }} onClick={() => { setViewingLeaderboard(false); setViewingTournaments(true); setViewingPacks(false); fetchTournaments(); }}>🏰</span>
-                  <span style={{ cursor: 'pointer', ...styles.activeNavTab }} onClick={() => { playSFX('click'); loadLeaderboardData('Global'); }}>🏆</span>
-                </div>
+                {renderBottomNav('leaderboard')}
               </div>
             ) : viewingTournaments ? (
               renderTournamentsView()
             ) : viewingPacks ? (
-              renderPacksView()
+              renderBackpackView()
             ) : (() => {
               const todayDateStr = new Date().toISOString().split('T')[0];
               const isDailyCompleted = (user.stats as any)?.lastDailyChallengeCompleted === todayDateStr;
@@ -6972,7 +7456,7 @@ Each object in the array must strictly match the following JSON structure:
                           ...getEquippedBorderStyle(user.equipped?.border, user.rank),
                           cursor: 'pointer'
                         }}
-                        onClick={() => { playSFX('click'); setIsProfileModalOpen(true); }}
+                        onClick={() => { playSFX('click'); setViewingProfile(true); }}
                       >
                         👤
                       </div>
@@ -6986,21 +7470,6 @@ Each object in the array must strictly match the following JSON structure:
 
                     <div style={styles.topRightControls}>
                       <span style={styles.walletCount}>🪙 {user.coins}</span>
-                      <button 
-                        style={styles.shopBtn} 
-                        onClick={() => { playSFX('click'); setIsShopOpen(true); }}
-                        id="btn-open-shop"
-                        title={isRtl ? 'متجر المظاهر' : 'Cosmetics Shop'}
-                      >
-                        🛒
-                      </button>
-                      <button 
-                        style={styles.shopBtn} 
-                        onClick={() => { playSFX('click'); setShowOnboarding(true); }}
-                        title={isRtl ? 'دليل اللعب والتعليمات' : 'Gameplay Guide & Tutorial'}
-                      >
-                        ❓
-                      </button>
                       {user.isAdmin && (
                         <button 
                           style={styles.shopBtn} 
@@ -7010,25 +7479,22 @@ Each object in the array must strictly match the following JSON structure:
                           🛡️
                         </button>
                       )}
-                      <button 
-                        style={styles.shopBtn} 
-                        onClick={() => { playSFX('click'); setIsSettingsOpen(true); }}
-                        title={isRtl ? 'الإعدادات' : 'Settings'}
-                      >
-                        ⚙️
-                      </button>
-                      <button style={styles.langBtn} onClick={() => { playSFX('click'); setIsRtl(!isRtl); }}>
-                        {isRtl ? 'EN' : 'عربي'}
-                      </button>
-                      <button style={styles.logoutBtn} onClick={() => { playSFX('click'); signOut(); }}>
-                        🚪
-                      </button>
                     </div>
                   </div>
 
                   <div 
-                    style={{ ...styles.rankBadgeCard, cursor: 'pointer' }}
-                    onClick={() => { playSFX('click'); setIsProfileModalOpen(true); }}
+                    style={{ 
+                      ...styles.rankBadgeCard, 
+                      cursor: 'pointer',
+                      maxHeight: isHeaderCollapsed ? '0px' : '200px',
+                      opacity: isHeaderCollapsed ? 0 : 1,
+                      overflow: 'hidden',
+                      padding: isHeaderCollapsed ? '0px' : '10px',
+                      marginBottom: isHeaderCollapsed ? '0px' : '20px',
+                      borderWidth: isHeaderCollapsed ? '0px' : '1px',
+                      transition: 'all 0.35s ease'
+                    }}
+                    onClick={() => { playSFX('click'); setViewingProfile(true); }}
                   >
                     <RankBadge rank={user.rank} size={80} animate={true} style={{ marginBottom: '8px' }} />
                     <div style={{ ...styles.rankGlowText, color: `var(--color-${user.rank.toLowerCase().replace(' ', '')})` }} className="text-glow">
@@ -7037,17 +7503,17 @@ Each object in the array must strictly match the following JSON structure:
                     <div style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ffffff', marginTop: '4px' }}>
                       {user.rankPoints} RP
                     </div>
-                    <div style={styles.latencyLabel}>
-                      DB: <span style={{ color: apiStatus === 'online' ? '#00ff87' : '#ff3b5c' }}>
-                        {apiStatus === 'online' ? `${latency}ms` : 'offline'}
-                      </span>
-                      {' | '} Realtime: <span style={{ color: socketStatus === 'connected' ? '#00f2fe' : '#ff3b5c' }}>
-                        {socketStatus}
-                      </span>
-                    </div>
+                    {renderConnectionIndicators(false)}
                   </div>
 
-                  <div style={styles.titleWrapper}>
+                  <div style={{ 
+                    ...styles.titleWrapper,
+                    maxHeight: isHeaderCollapsed ? '0px' : '80px',
+                    opacity: isHeaderCollapsed ? 0 : 1,
+                    overflow: 'hidden',
+                    margin: isHeaderCollapsed ? '0px' : '10px 0',
+                    transition: 'all 0.35s ease'
+                  }}>
                     <h1 style={styles.glowTitle} className="text-glow">{t.title}</h1>
                     {activeSeason && (
                       <div style={{
@@ -7065,7 +7531,14 @@ Each object in the array must strictly match the following JSON structure:
                     )}
                   </div>
 
-                  <div style={styles.playHeroContainer}>
+                  <div style={{ 
+                    ...styles.playHeroContainer,
+                    maxHeight: isHeaderCollapsed ? '0px' : '180px',
+                    opacity: isHeaderCollapsed ? 0 : 1,
+                    overflow: 'hidden',
+                    margin: isHeaderCollapsed ? '0px' : '20px 0',
+                    transition: 'all 0.35s ease'
+                  }}>
                     <button 
                       style={styles.playHeroBtn} 
                       onClick={() => startSoloGame('TIMED_CHALLENGE')}
@@ -7075,8 +7548,60 @@ Each object in the array must strictly match the following JSON structure:
                     </button>
                   </div>
 
+                  {/* Compact Sticky Header */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      backgroundColor: 'rgba(15, 18, 30, 0.95)',
+                      backdropFilter: 'blur(10px)',
+                      borderBottom: isHeaderCollapsed ? '1px solid rgba(255, 255, 255, 0.08)' : 'none',
+                      padding: isHeaderCollapsed ? '8px 12px' : '0px 12px',
+                      maxHeight: isHeaderCollapsed ? '60px' : '0px',
+                      opacity: isHeaderCollapsed ? 1 : 0,
+                      overflow: 'hidden',
+                      transition: 'all 0.35s ease',
+                      marginBottom: isHeaderCollapsed ? '10px' : '0px',
+                      borderRadius: '8px',
+                      flexShrink: 0
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '1.2rem' }}>{getRankEmoji(user.rank)}</span>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#ffffff' }}>
+                        {user.rank}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: '#8a93c0' }}>
+                        | {user.rankPoints} RP
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      {renderConnectionIndicators(true)}
+                      <button
+                        onClick={() => { playSFX('click'); startSoloGame('TIMED_CHALLENGE'); }}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '4px',
+                          background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+                          color: '#0e111f',
+                          border: 'none',
+                          fontWeight: 'bold',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          boxShadow: '0 0 10px rgba(0, 242, 254, 0.4)'
+                        }}
+                      >
+                        {isRtl ? '◀ لعب' : '▶ PLAY'}
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Scrollable middle container to prevent viewport overflow and ensure bottom nav visibility */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', flex: 1, minHeight: 0, margin: '12px 0', paddingRight: '4px' }}>
+                  <div 
+                    onScroll={handleScroll}
+                    style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', flex: 1, minHeight: 0, margin: '12px 0', paddingRight: '4px' }}>
                     <div style={styles.modesContainer}>
                       <div style={styles.modeCard} onClick={() => startSoloGame('PRACTICE')}>
                         <span style={styles.modeIcon}>⚗️</span>
@@ -7190,33 +7715,7 @@ Each object in the array must strictly match the following JSON structure:
                     )}
                   </div>
 
-                  <div style={styles.bottomNavMock}>
-                    <span 
-                      style={{ cursor: 'pointer', ...((!viewingLeaderboard && !viewingTournaments && !viewingPacks) ? styles.activeNavTab : {}) }} 
-                      onClick={() => { playSFX('click'); setViewingLeaderboard(false); setViewingTournaments(false); setViewingPacks(false); }}
-                    >
-                      🎒
-                    </span>
-                    <span 
-                      style={{ cursor: 'pointer', ...(viewingPacks ? styles.activeNavTab : {}) }} 
-                      onClick={() => { playSFX('click'); setViewingLeaderboard(false); setViewingTournaments(false); setViewingPacks(true); fetchPacks(); }}
-                    >
-                      📦
-                    </span>
-                    <span>⚔️</span>
-                    <span 
-                      style={{ cursor: 'pointer', ...((!viewingLeaderboard && viewingTournaments) ? styles.activeNavTab : {}) }} 
-                      onClick={() => { playSFX('click'); setViewingLeaderboard(false); setViewingTournaments(true); setViewingPacks(false); fetchTournaments(); }}
-                    >
-                      🏰
-                    </span>
-                    <span 
-                      style={{ cursor: 'pointer', ...(viewingLeaderboard ? styles.activeNavTab : {}) }} 
-                      onClick={() => { playSFX('click'); setViewingLeaderboard(true); setViewingTournaments(false); setViewingPacks(false); loadLeaderboardData(); }}
-                    >
-                      🏆
-                    </span>
-                  </div>
+                  {renderBottomNav('arena')}
                 </>
               );
             })()}
@@ -10811,41 +11310,7 @@ Play MindRace and test your knowledge now! 🧠⚡`;
           </div>
         )}
 
-        {/* PLAYER PROFILE DASHBOARD MODAL */}
-        {user && (
-          <PlayerProfileModal 
-            user={user as any}
-            isOpen={isProfileModalOpen}
-            onClose={() => setIsProfileModalOpen(false)}
-            isRtl={isRtl}
-          />
-        )}
 
-        {/* COSMETIC SHOP MODAL */}
-        {user && (
-          <CosmeticShopModal
-            user={user}
-            isOpen={isShopOpen}
-            onClose={() => setIsShopOpen(false)}
-            isRtl={isRtl}
-            refreshProfile={refreshProfile}
-            triggerAlert={triggerGamingAlert}
-            playSFX={playSFX}
-          />
-        )}
-
-        {/* SETTINGS MODAL */}
-        <SettingsModal
-          isOpen={isSettingsOpen}
-          onClose={() => setIsSettingsOpen(false)}
-          sfxEnabled={sfxEnabled}
-          setSfxEnabled={setSfxEnabled}
-          sfxVolume={sfxVolume}
-          setSfxVolume={setSfxVolume}
-          isRtl={isRtl}
-          setIsRtl={setIsRtl}
-          playSFX={playSFX}
-        />
 
         {/* ONBOARDING TUTORIAL */}
         <OnboardingTutorial

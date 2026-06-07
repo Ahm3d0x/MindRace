@@ -1,0 +1,762 @@
+﻿diff --git a/apps/web/src/app/ClientPage.tsx b/apps/web/src/app/ClientPage.tsx
+index 5c0db74..8690048 100644
+--- a/apps/web/src/app/ClientPage.tsx
++++ b/apps/web/src/app/ClientPage.tsx
+@@ -8,11 +8,10 @@ import { useRouter } from 'next/navigation';
+ import { supabase } from '../lib/supabase';
+ import { io, Socket } from 'socket.io-client';
+ import { RankBadge } from '../components/RankBadge';
+-import { PlayerProfileModal, BADGES_METADATA } from '../components/PlayerProfileModal';
+-import { CosmeticShopModal } from '../components/CosmeticShopModal';
++import { PlayerProfileView, BADGES_METADATA } from '../components/PlayerProfileView';
++import { PlayerStoreView } from '../components/PlayerStoreView';
+ import { QuestsPanel } from '../components/QuestsPanel';
+ import { SeasonTrackerPanel } from '../components/SeasonTrackerPanel';
+-import { SettingsModal } from '../components/SettingsModal';
+ import { getDeviceFingerprint } from '../lib/fingerprint';
+ import { AdminModerationModal } from '../components/AdminModerationModal';
+ import { OnboardingTutorial } from '../components/OnboardingTutorial';
+@@ -652,7 +651,12 @@ export default function ClientPage() {
+   const router = useRouter();
+ 
+   const [isRtl, setIsRtl] = useState(false);
+-  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
++  const [viewingProfile, setViewingProfile] = useState(false);
++  const [viewingStore, setViewingStore] = useState(false);
++  const [backpackSubTab, setBackpackSubTab] = useState<'items' | 'packs'>('items');
++  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
++  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
++  const [activeTooltip, setActiveTooltip] = useState<'db' | 'realtime' | null>(null);
+   const [activeSeason, setActiveSeason] = useState<any>(null);
+   const [daysRemaining, setDaysRemaining] = useState<number>(0);
+   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
+@@ -660,7 +664,6 @@ export default function ClientPage() {
+   // Audio settings states
+   const [sfxEnabled, setSfxEnabled] = useState<boolean>(true);
+   const [sfxVolume, setSfxVolume] = useState<number>(0.7);
+-  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+   const [isTournamentMatch, setIsTournamentMatch] = useState<boolean>(false);
+   const [matchStartRP, setMatchStartRP] = useState<number>(0);
+   const [matchStartBadges, setMatchStartBadges] = useState<string[]>([]);
+@@ -4668,121 +4671,147 @@ Each object in the array must strictly match the following JSON structure:
+   }
+ 
+   async function handleEditQuestionSubmit(qId: string, questionPayload: any) {
+-    if (!selectedPack) return;
+-    try {
+-      const { data: { session } } = await supabase.auth.getSession();
+-      const token = session?.access_token;
+-
+-      const qData: any = {
+-        type: questionPayload.type,
+-        body: questionPayload.body,
+-        difficulty: questionPayload.difficulty,
+-        explanation: questionPayload.explanation,
+-      };
+-
+-      if (questionPayload.imageUrl) qData.imageUrl = questionPayload.imageUrl;
+-
+-      if (questionPayload.type === 'MULTIPLE_CHOICE') {
+-        qData.options = questionPayload.options.filter((o: any) => o.text.trim() !== '');
+-        qData.correctAnswer = questionPayload.correctAnswer;
+-      } else if (questionPayload.type === 'TRUE_FALSE') {
+-        qData.correctAnswer = questionPayload.correctAnswer;
+-      } else if (questionPayload.type === 'FILL_IN_THE_BLANK') {
+-        qData.correctAnswer = questionPayload.correctAnswer;
+-      } else if (questionPayload.type === 'ORDERING_QUESTION') {
+-        qData.options = questionPayload.orderingItems.map((text: string, idx: number) => ({ id: String(idx + 1), text }));
+-        qData.orderingItems = questionPayload.orderingItems.map((_: any, idx: number) => String(idx + 1));
+-        qData.correctAnswer = qData.orderingItems;
+-      } else if (questionPayload.type === 'MATCHING_QUESTION') {
+-        qData.matchingPairs = questionPayload.matchingPairs.filter((p: any) => p.leftText.trim() !== '' && p.rightText.trim() !== '');
+-        qData.correctAnswer = qData.matchingPairs;
+-      }
+-
+-      const res = await fetch(`${API_URL}/api/v1/packs/${selectedPack.pack.id}/questions/${qId}`, {
+-        method: 'PUT',
+-        headers: {
+-          Authorization: `Bearer ${token}`,
+-          'Content-Type': 'application/json'
+-        },
+-        body: JSON.stringify(qData)
+-      });
+-
+-      if (res.ok) {
+-        triggerGamingAlert(isRtl ? '╪ز┘à ╪ز╪╣╪»┘è┘ ╪د┘╪│╪ج╪د┘ ╪ذ┘╪ش╪د╪ص!' : 'Question updated successfully!', 'success');
+-        setEditingQuestion(null);
+-        await fetchPackDetails(selectedPack.pack.id);
+-      } else {
+-        const err = await res.json();
+-        triggerGamingAlert(err.error || 'Failed to update question', 'error');
+-      }
+-    } catch (err) {
+-      console.error(err);
+-      triggerGamingAlert('Error updating question', 'error');
+-    }
+-  }
+-
+-  async function handleDeleteQuestion(qId: string) {
+-    if (!confirm(isRtl ? '┘ç┘ ╪ث┘╪ز ┘à╪ز╪ث┘â╪» ┘à┘ ╪ص╪░┘ ┘ç╪░╪د ╪د┘╪│╪ج╪د┘╪ا' : 'Are you sure you want to delete this question?')) return;
+-    if (!selectedPack) return;
+-    try {
+-      const { data: { session } } = await supabase.auth.getSession();
+-      const token = session?.access_token;
+-
+-      const res = await fetch(`${API_URL}/api/v1/packs/${selectedPack.pack.id}/questions/${qId}`, {
+-        method: 'DELETE',
+-        headers: {
+-          Authorization: `Bearer ${token}`
+-        }
+-      });
+-
+-      if (res.ok) {
+-        triggerGamingAlert(isRtl ? '╪ز┘à ╪ص╪░┘ ╪د┘╪│╪ج╪د┘!' : 'Question deleted successfully!', 'success');
+-        await fetchPackDetails(selectedPack.pack.id);
+-      } else {
+-        const err = await res.json();
+-        triggerGamingAlert(err.error || 'Failed to delete question', 'error');
+-      }
+-    } catch (err) {
+-      console.error(err);
+-    }
+-  }
++  const renderPacksListContent = () => {
++    const publicPacks = packs.filter(p => p.isPublic);
++    const privatePacks = packs.filter(p => !p.isPublic);
+ 
+-  async function handleConfirmBatchImport() {
+-    if (!selectedPack || previewQuestions.length === 0) return;
+-    try {
+-      const { data: { session } } = await supabase.auth.getSession();
+-      const token = session?.access_token;
++    return (
++      <>
++        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexShrink: 0 }}>
++          <div>
++            <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
++              {isRtl ? '╪ص╪▓┘à ╪د┘╪ث╪│╪خ┘╪ر ╪د┘┘à╪«╪╡╪╡╪ر' : 'Question Packs'}
++            </h2>
++            <span style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
++              {isRtl ? '╪ح┘╪┤╪د╪ة ┘ê┘╪╣╪ذ ┘ê╪ز┘é┘è┘è┘à ╪ص╪▓┘à ╪د┘╪ث╪│╪خ┘╪ر' : 'Create, play, and rate question pools'}
++            </span>
++          </div>
++          <button
++            onClick={() => { playSFX('click'); setCreatingPack(true); }}
++            style={{
++              padding: '6px 12px',
++              background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
++              color: '#05060f',
++              fontWeight: 'bold',
++              border: 'none',
++              borderRadius: '6px',
++              fontSize: '0.75rem',
++              cursor: 'pointer',
++              boxShadow: '0 2px 8px rgba(0, 242, 254, 0.2)'
++            }}
++          >
++            ظئـ {isRtl ? '╪ح┘╪┤╪د╪ة ╪ص╪▓┘à╪ر' : 'Create Pack'}
++          </button>
++        </div>
+ 
+-      const res = await fetch(`${API_URL}/api/v1/packs/${selectedPack.pack.id}/questions/batch`, {
+-        method: 'POST',
+-        headers: {
+-          Authorization: `Bearer ${token}`,
+-          'Content-Type': 'application/json'
+-        },
+-        body: JSON.stringify({ questions: previewQuestions })
+-      });
++        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
++          {loadingPacks ? (
++            <div style={{ padding: '20px', textAlign: 'center', color: '#00f2fe', fontSize: '0.85rem' }}>
++              {isRtl ? '╪ش╪د╪▒┘è ╪ز╪ص┘à┘è┘ ╪د┘╪ص╪▓┘à...' : 'Loading packs...'}
++            </div>
++          ) : (
++            <>
++              <div>
++                <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#ffd700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
++                  ≡اî {isRtl ? '╪ص╪▓┘à ╪╣╪د┘à╪ر ┘┘╪د╪│╪ز┘â╪┤╪د┘' : 'Explore Public Packs'}
++                </h4>
++                {publicPacks.length === 0 ? (
++                  <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px', marginBottom: '10px' }}>
++                    {isRtl ? '┘╪د ╪ز┘ê╪ش╪» ╪ص╪▓┘à ╪╣╪د┘à╪ر ┘à┘╪┤┘ê╪▒╪ر ╪ص╪د┘┘è┘ï╪د.' : 'No public packs available yet.'}
++                  </div>
++                ) : (
++                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '10px' }}>
++                    {publicPacks.map((pack) => (
++                      <div
++                        key={pack.id}
++                        onClick={() => fetchPackDetails(pack.id)}
++                        style={{
++                          padding: '12px',
++                          backgroundColor: 'rgba(255, 255, 255, 0.02)',
++                          border: '1px solid rgba(255, 255, 255, 0.05)',
++                          borderRadius: '8px',
++                          cursor: 'pointer',
++                          display: 'flex',
++                          flexDirection: 'column',
++                          gap: '4px'
++                        }}
++                        className="hover-card-neon"
++                      >
++                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                          <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold', backgroundColor: 'rgba(0, 242, 254, 0.08)', padding: '2px 6px', borderRadius: '4px' }}>
++                            {pack.category}
++                          </span>
++                          <span style={{ fontSize: '0.7rem', color: '#ffb300' }}>
++                            ظص {pack.ratingAvg?.toFixed(1) || '0.0'} ({pack.ratingCount})
++                          </span>
++                        </div>
++                        <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
++                        <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{getLocalizedText(pack.description)}</p>
++                        <span style={{ fontSize: '0.65rem', color: '#8a93c0', marginTop: '2px' }}>
++                          ظ£ي╕ {isRtl ? '╪د┘┘à┘╪┤╪خ:' : 'Creator:'} <strong style={{ color: '#ffffff' }}>{pack.creatorUsername}</strong>
++                        </span>
++                      </div>
++                    ))}
++                  </div>
++                )}
++              </div>
+ 
+-      if (res.ok) {
+-        triggerGamingAlert(
+-          isRtl 
+-            ? `╪ز┘à ╪د╪│╪ز┘è╪▒╪د╪» ${previewQuestions.length} ╪ث╪│╪خ┘╪ر ╪ذ┘╪ش╪د╪ص!` 
+-            : `Successfully imported ${previewQuestions.length} questions!`, 
+-          'success'
+-        );
+-        setPreviewOpen(false);
+-        setPreviewQuestions([]);
+-        await fetchPackDetails(selectedPack.pack.id);
+-      } else {
+-        const err = await res.json();
+-        triggerGamingAlert(err.error || 'Failed to import batch questions', 'error');
+-      }
+-    } catch (err) {
+-      console.error(err);
+-      triggerGamingAlert('Error batch importing questions', 'error');
+-    }
+-  }
++              <div style={{ marginTop: '10px' }}>
++                <h4 style={{ margin: '4px 0', fontSize: '0.8rem', color: '#00ff87', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
++                  ≡اôخ {isRtl ? '╪ص╪▓┘à┘è ╪د┘╪«╪د╪╡╪ر' : 'My Packs'}
++                </h4>
++                {privatePacks.length === 0 && packs.filter(p => p.creatorId === user?.id && p.isPublic).length === 0 ? (
++                  <div style={{ padding: '15px', textAlign: 'center', color: '#8a93c0', fontSize: '0.75rem', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '6px' }}>
++                    {isRtl ? '┘┘à ╪ز┘é┘à ╪ذ╪ح┘╪┤╪د╪ة ╪ث┘è ╪ص╪▓┘à ┘à╪«╪╡╪╡╪ر ╪ذ╪╣╪».' : 'You have not created any packs yet.'}
++                  </div>
++                ) : (
++                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
++                    {packs.filter(p => p.creatorId === user?.id).map((pack) => (
++                      <div
++                        key={pack.id}
++                        onClick={() => fetchPackDetails(pack.id)}
++                        style={{
++                          padding: '12px',
++                          backgroundColor: 'rgba(255, 255, 255, 0.02)',
++                          border: `1px solid ${pack.isPublic ? 'rgba(0, 255, 135, 0.15)' : 'rgba(255, 59, 92, 0.15)'}`,
++                          borderRadius: '8px',
++                          cursor: 'pointer',
++                          display: 'flex',
++                          flexDirection: 'column',
++                          gap: '4px'
++                        }}
++                        className="hover-card-neon"
++                      >
++                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                          <span style={{ fontSize: '0.7rem', color: '#00f2fe', fontWeight: 'bold' }}>
++                            {pack.category}
++                          </span>
++                          <span style={{
++                            fontSize: '0.65rem',
++                            backgroundColor: pack.isPublic ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255, 59, 92, 0.1)',
++                            color: pack.isPublic ? '#00ff87' : '#ff3b5c',
++                            padding: '1px 5px',
++                            borderRadius: '3px',
++                            fontWeight: 'bold'
++                          }}>
++                            {pack.isPublic ? (isRtl ? '╪╣╪د┘à╪ر' : 'Public') : (isRtl ? '╪«╪د╪╡╪ر' : 'Private')}
++                          </span>
++                        </div>
++                        <h3 style={{ margin: '4px 0', fontSize: '0.9rem', fontWeight: 700, color: '#ffffff' }}>{getLocalizedText(pack.title)}</h3>
++                        <p style={{ margin: '0', fontSize: '0.75rem', color: '#8a93c0' }}>{getLocalizedText(pack.description)}</p>
++                      </div>
++                    ))}
++                  </div>
++                )}
++              </div>
++            </>
++          )}
++        </div>
++      </>
++    );
++  };
+ 
+-  const renderPacksView = () => {
++  const renderBackpackView = () => {
+     if (creatingPack) {
+       return (
+         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+@@ -5254,13 +5283,7 @@ Each object in the array must strictly match the following JSON structure:
+             </form>
+           </div>
+ 
+-          <div style={styles.bottomNavMock}>
+-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingPacks(false); }}>≡اْ</span>
+-            <span style={{ cursor: 'pointer', ...styles.activeNavTab }}>≡اôخ</span>
+-            <span>ظأ¤ي╕</span>
+-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingTournaments(true); fetchTournaments(); }}>≡ا░</span>
+-            <span style={{ cursor: 'pointer' }} onClick={() => { setCreatingPack(false); setViewingLeaderboard(true); loadLeaderboardData(); }}>≡ا</span>
+-          </div>
++          {renderBottomNav('backpack')}
+         </div>
+       );
+     }
+@@ -5305,7 +5328,7 @@ Each object in the array must strictly match the following JSON structure:
+                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                     {pack.tags.map((t: string, idx: number) => (
+                       <span key={idx} style={{
+-                        fontSize: '0.6rem',
++                        fontSize: '0.65rem',
+                         color: '#00f2fe',
+                         backgroundColor: 'rgba(0, 242, 254, 0.06)',
+                         border: '1px solid rgba(0, 242, 254, 0.15)',
+@@ -6618,6 +6641,438 @@ Each object in the array must strictly match the following JSON structure:
+     }
+   }, [screen, currentRoom?.id]);
+ 
++  // MindRace UI Reorganization helper functions
++  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
++    const scrollTop = e.currentTarget.scrollTop;
++    if (scrollTop > 20) {
++      setIsHeaderCollapsed(true);
++    } else if (scrollTop <= 5) {
++      setIsHeaderCollapsed(false);
++    }
++  };
++
++  const getRankEmoji = (rankName: string) => {
++    const r = rankName?.toLowerCase() || '';
++    if (r.includes('bronze')) return '≡احë';
++    if (r.includes('silver')) return '≡احê';
++    if (r.includes('gold')) return '≡احç';
++    if (r.includes('platinum')) return '≡اْ';
++    if (r.includes('diamond')) return '≡اْب';
++    if (r.includes('master') && !r.includes('grand')) return '≡اô';
++    if (r.includes('grand master')) return '≡ا';
++    if (r.includes('legend')) return '≡اّّ';
++    if (r.includes('mythic')) return '≡ا¤«';
++    if (r.includes('titan')) return '≡اîî';
++    return '≡اûي╕';
++  };
++
++  const getDbColor = () => {
++    if (apiStatus !== 'online') return '#ff3b5c'; // Red
++    if (latency === null || latency >= 600) return '#ff9100'; // Orange
++    if (latency >= 300) return '#ffdd00'; // Yellow
++    if (latency >= 150) return '#a2ff00'; // Light Green
++    return '#00ff66'; // Bright Green (Healthy)
++  };
++
++  const getRealtimeColor = () => {
++    if (socketStatus === 'disconnected') return '#ff3b5c'; // Red
++    if (socketStatus === 'connecting') return '#ffdd00'; // Yellow
++    return '#00ff66'; // Bright Green (Healthy)
++  };
++
++  const renderConnectionIndicators = (isCompact = false) => {
++    const dbCol = getDbColor();
++    const rtCol = getRealtimeColor();
++
++    const handleDotClick = (e: React.MouseEvent, type: 'db' | 'realtime') => {
++      e.stopPropagation();
++      playSFX('click');
++      setActiveTooltip(prev => prev === type ? null : type);
++    };
++
++    return (
++      <div style={{
++        display: 'flex',
++        alignItems: 'center',
++        justifyContent: 'center',
++        gap: isCompact ? '6px' : '12px',
++        marginTop: isCompact ? '0px' : '6px',
++        position: 'relative'
++      }}>
++        {/* Database Indicator Dot */}
++        <div 
++          onClick={(e) => handleDotClick(e, 'db')}
++          style={{
++            display: 'flex',
++            alignItems: 'center',
++            gap: '4px',
++            cursor: 'pointer',
++            padding: '2px 4px',
++            borderRadius: '4px',
++            backgroundColor: activeTooltip === 'db' ? 'rgba(255,255,255,0.05)' : 'transparent'
++          }}
++          title="Database Status"
++        >
++          <span style={{
++            width: '7px',
++            height: '7px',
++            borderRadius: '50%',
++            backgroundColor: dbCol,
++            boxShadow: `0 0 6px ${dbCol}`,
++            display: 'inline-block'
++          }} />
++          {!isCompact && <span style={{ fontSize: '0.65rem', color: '#8a93c0', fontWeight: 'bold' }}>DB</span>}
++        </div>
++
++        {/* Realtime Indicator Dot */}
++        <div 
++          onClick={(e) => handleDotClick(e, 'realtime')}
++          style={{
++            display: 'flex',
++            alignItems: 'center',
++            gap: '4px',
++            cursor: 'pointer',
++            padding: '2px 4px',
++            borderRadius: '4px',
++            backgroundColor: activeTooltip === 'realtime' ? 'rgba(255,255,255,0.05)' : 'transparent'
++          }}
++          title="Realtime Service Status"
++        >
++          <span style={{
++            width: '7px',
++            height: '7px',
++            borderRadius: '50%',
++            backgroundColor: rtCol,
++            boxShadow: `0 0 6px ${rtCol}`,
++            display: 'inline-block'
++          }} />
++          {!isCompact && <span style={{ fontSize: '0.65rem', color: '#8a93c0', fontWeight: 'bold' }}>RT</span>}
++        </div>
++
++        {/* Tooltip Popup Box */}
++        {activeTooltip && (
++          <div 
++            style={{
++              position: 'absolute',
++              bottom: isCompact ? '20px' : '22px',
++              right: isCompact ? '-40px' : 'auto',
++              zIndex: 999,
++              width: '160px',
++              backgroundColor: 'rgba(15, 18, 30, 0.98)',
++              border: '1px solid rgba(255, 255, 255, 0.1)',
++              borderRadius: '8px',
++              padding: '10px',
++              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.6)',
++              textAlign: isRtl ? 'right' : 'left',
++              backdropFilter: 'blur(10px)'
++            }}
++            onClick={(e) => e.stopPropagation()}
++          >
++            {activeTooltip === 'db' ? (
++              <>
++                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '4px' }}>
++                  {isRtl ? '┘é╪د╪╣╪»╪ر ╪د┘╪ذ┘è╪د┘╪د╪ز' : 'Database'}
++                </div>
++                <div style={{ fontSize: '0.65rem', color: '#ffffff', marginBottom: '2px' }}>
++                  {isRtl ? '╪د┘╪ص╪د┘╪ر:' : 'Status:'}{' '}
++                  <span style={{ color: dbCol, fontWeight: 'bold' }}>
++                    {apiStatus === 'online' ? (isRtl ? '┘à╪ز╪╡┘' : 'Connected') : (isRtl ? '╪║┘è╪▒ ┘à╪ز╪╡┘' : 'Offline')}
++                  </span>
++                </div>
++                <div style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
++                  {isRtl ? '╪د┘╪د╪│╪ز╪ش╪د╪ذ╪ر:' : 'Latency:'}{' '}
++                  <span style={{ color: '#ffffff' }}>
++                    {apiStatus === 'online' && latency !== null ? `${latency}ms` : 'N/A'}
++                  </span>
++                </div>
++              </>
++            ) : (
++              <>
++                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '4px' }}>
++                  {isRtl ? '╪د┘╪د╪ز╪╡╪د┘ ╪د┘┘┘ê╪▒┘è' : 'Realtime'}
++                </div>
++                <div style={{ fontSize: '0.65rem', color: '#ffffff', marginBottom: '2px' }}>
++                  {isRtl ? '╪د┘╪ص╪د┘╪ر:' : 'Status:'}{' '}
++                  <span style={{ color: rtCol, fontWeight: 'bold' }}>
++                    {socketStatus === 'connected' 
++                      ? (isRtl ? '┘à╪ز╪╡┘' : 'Connected') 
++                      : socketStatus === 'connecting' 
++                        ? (isRtl ? '╪ش╪د╪▒┘è ╪د┘╪د╪ز╪╡╪د┘' : 'Connecting') 
++                        : (isRtl ? '╪║┘è╪▒ ┘à╪ز╪╡┘' : 'Offline')}
++                  </span>
++                </div>
++                <div style={{ fontSize: '0.65rem', color: '#8a93c0' }}>
++                  {isRtl ? '╪د┘┘à╪▓╪د┘à┘╪ر:' : 'Sync:'}{' '}
++                  <span style={{ color: '#ffffff' }}>
++                    {lastSyncTime ? `${Math.round((Date.now() - lastSyncTime.getTime()) / 1000)}s ${isRtl ? '┘à╪╢╪ز' : 'ago'}` : (isRtl ? '┘╪د ┘è┘ê╪ش╪»' : 'Never')}
++                  </span>
++                </div>
++              </>
++            )}
++            
++            <button 
++              onClick={() => setActiveTooltip(null)}
++              style={{
++                position: 'absolute',
++                top: '4px',
++                right: isRtl ? 'auto' : '4px',
++                left: isRtl ? '4px' : 'auto',
++                background: 'none',
++                border: 'none',
++                color: '#8a93c0',
++                cursor: 'pointer',
++                fontSize: '0.65rem'
++              }}
++            >
++              ظ£ـ
++            </button>
++          </div>
++        )}
++      </div>
++    );
++  };
++
++  const handleEquipBackpackItem = async (key: string, category: 'border' | 'effect', isEquipped: boolean) => {
++    playSFX('click');
++    try {
++      const { data: { session } } = await supabase.auth.getSession();
++      const token = session?.access_token;
++
++      const res = await fetch(`${API_URL}/api/v1/store/equip`, {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++          'Authorization': `Bearer ${token}`
++        },
++        body: JSON.stringify({ 
++          category, 
++          key: isEquipped ? null : key 
++        })
++      });
++
++      const data = await res.json();
++      if (!res.ok) {
++        throw new Error(data.error || 'Equip failed');
++      }
++
++      triggerGamingAlert(
++        isRtl 
++          ? (isEquipped ? '╪ز┘à ╪ح┘╪║╪د╪ة ╪د┘╪ز╪ش┘ç┘è╪▓' : '╪ز┘à ╪د┘╪ز╪ش┘ç┘è╪▓ ╪ذ┘╪ش╪د╪ص!') 
++          : (isEquipped ? 'Unequipped item' : 'Equipped successfully!'), 
++        'success'
++      );
++      await refreshProfile();
++    } catch (err: any) {
++      playSFX('wrong');
++      triggerGamingAlert(err.message || 'Error occurred', 'error');
++    }
++  };
++
++  const COSMETICS_CATALOG = [
++    {
++      key: 'cyber_neon',
++      name: { en: 'Cyber Neon Border', ar: '╪ح╪╖╪د╪▒ ╪د┘┘┘è┘ê┘ ╪د┘╪│┘è╪ذ╪▒╪د┘┘è' },
++      desc: { en: 'A vibrant glowing cyan avatar border.', ar: '╪ح╪╖╪د╪▒ ╪▒┘à╪▓ ╪ز╪╣╪ذ┘è╪▒┘è ┘à╪ز┘ê┘ç╪ش ╪ذ╪د┘┘┘ê┘ ╪د┘╪│┘à╪د┘ê┘è ╪د┘┘╪د╪ذ╪╢ ╪ذ╪د┘╪ص┘è╪د╪ر.' },
++      category: 'border' as const,
++      preview: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)'
++    },
++    {
++      key: 'gold_halo',
++      name: { en: 'Gold Halo Border', ar: '╪ح╪╖╪د╪▒ ╪د┘┘ç╪د┘╪ر ╪د┘╪░┘ç╪ذ┘è╪ر' },
++      desc: { en: 'A rotating premium golden border.', ar: '╪ح╪╖╪د╪▒ ╪░┘ç╪ذ┘è ┘à┘à┘è╪▓ ┘à╪╣ ┘ç╪د┘╪ر ┘à╪ز┘ê┘ç╪ش╪ر.' },
++      category: 'border' as const,
++      preview: 'linear-gradient(135deg, #ffd700 0%, #fbbf24 100%)'
++    },
++    {
++      key: 'dark_matter',
++      name: { en: 'Dark Matter Border', ar: '╪ح╪╖╪د╪▒ ╪د┘┘à╪د╪»╪ر ╪د┘┘à╪╕┘┘à╪ر' },
++      desc: { en: 'A deep dark obsidian pulsing border.', ar: '╪ح╪╖╪د╪▒ ╪»╪د┘â┘ ╪ذ┘┘à╪╖ ┘╪ذ╪╢╪د╪ز ╪د┘┘à╪د╪»╪ر ╪د┘┘à╪╕┘┘à╪ر ╪د┘╪║╪د┘à╪╢╪ر.' },
++      category: 'border' as const,
++      preview: 'linear-gradient(135deg, #8b5cf6 0%, #090d16 100%)'
++    },
++    {
++      key: 'laser_strike',
++      name: { en: 'Laser Strike Effect', ar: '╪ز╪ث╪س┘è╪▒ ╪╢╪▒╪ذ╪ر ╪د┘┘┘è╪▓╪▒' },
++      desc: { en: 'A clean green/cyan laser sweep across the deck.', ar: '┘à╪│╪ص ╪╢┘ê╪خ┘è ┘┘è╪▓╪▒ ╪ث╪«╪╢╪▒ ┘ê╪│┘à╪د┘ê┘è ╪╣┘┘ë ╪د┘╪ذ╪╖╪د┘é╪ر ╪╣┘╪» ╪د┘╪ح╪ش╪د╪ذ╪ر ╪د┘╪╡╪ص┘è╪ص╪ر.' },
++      category: 'effect' as const,
++      preview: 'ظأة'
++    },
++    {
++      key: 'firework',
++      name: { en: 'Firework Effect', ar: '╪ز╪ث╪س┘è╪▒ ╪د┘╪ث┘╪╣╪د╪ذ ╪د┘┘╪د╪▒┘è╪ر' },
++      desc: { en: 'Celebratory colorful sparkle bursts.', ar: '╪د┘┘╪ش╪د╪▒╪د╪ز ┘à┘┘ê┘╪ر ┘ê╪د╪ص╪ز┘╪د┘┘è╪ر ┘à╪ذ┘ç╪▒╪ر ╪╣┘╪» ╪د┘╪ح╪ش╪د╪ذ╪ر ╪د┘╪╡╪ص┘è╪ص╪ر.' },
++      category: 'effect' as const,
++      preview: '≡ا'
++    },
++    {
++      key: 'matrix_rain',
++      name: { en: 'Matrix Rain Effect', ar: '╪ز╪ث╪س┘è╪▒ ┘à╪╖╪▒ ╪د┘┘à╪د╪ز╪▒┘è┘â╪│' },
++      desc: { en: 'Digital falling green code matrix sweep.', ar: '╪┤┘╪▒╪د╪ز ╪▒┘é┘à┘è╪ر ╪«╪╢╪▒╪د╪ة ┘à╪ز╪│╪د┘é╪╖╪ر ╪╣┘╪» ╪د┘╪ح╪ش╪د╪ذ╪ر ╪د┘╪╡╪ص┘è╪ص╪ر.' },
++      category: 'effect' as const,
++      preview: '≡اْ╗'
++    }
++  ];
++
++  const renderOwnedItems = () => {
++    const owned = COSMETICS_CATALOG.filter(item => user?.inventory?.includes(item.key));
++    const equipped = user?.equipped || { border: null, effect: null };
++
++    if (owned.length === 0) {
++      return (
++        <div style={{ textAlign: 'center', padding: '40px 20px', color: '#8a93c0', fontSize: '0.85rem' }}>
++          {isRtl ? '╪ص┘é┘è╪ذ╪ز┘â ┘╪د╪▒╪║╪ر. ┘é┘à ╪ذ╪┤╪▒╪د╪ة ┘à╪╕┘ç╪▒ ┘à┘ ╪د┘┘à╪ز╪ش╪▒ ┘╪ز╪ش┘ç┘è╪▓┘ç!' : 'Your backpack is empty. Buy cosmetics from the store to equip them!'}
++        </div>
++      );
++    }
++
++    return (
++      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
++        {owned.map((item) => {
++          const isEquipped = equipped[item.category] === item.key;
++          return (
++            <div key={item.key} style={{ display: 'flex', alignItems: 'center', padding: '10px 14px', backgroundColor: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', gap: '12px' }}>
++              <div style={{ width: '50px', height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0, 0, 0, 0.25)', borderRadius: '8px' }}>
++                {item.category === 'border' ? (
++                  <div style={{
++                    width: '40px',
++                    height: '40px',
++                    borderRadius: '50%',
++                    border: '2px solid transparent',
++                    backgroundImage: `linear-gradient(rgba(15,18,30,1), rgba(15,18,30,1)), ${item.preview}`,
++                    backgroundOrigin: 'border-box',
++                    backgroundClip: 'padding-box, border-box',
++                    display: 'flex',
++                    alignItems: 'center',
++                    justifyContent: 'center',
++                    fontSize: '1.2rem'
++                  }}>
++                    ≡اّج
++                  </div>
++                ) : (
++                  <span style={{ fontSize: '1.8rem' }}>{item.preview}</span>
++                )}
++              </div>
++              <div style={{ flex: 1, minWidth: 0 }}>
++                <h4 style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ffffff', margin: '0 0 2px 0' }}>
++                  {isRtl ? item.name.ar : item.name.en}
++                </h4>
++                <p style={{ fontSize: '0.65rem', color: '#8a93c0', margin: 0 }}>
++                  {isRtl ? item.desc.ar : item.desc.en}
++                </p>
++              </div>
++              <button
++                onClick={() => handleEquipBackpackItem(item.key, item.category, isEquipped)}
++                style={{
++                  padding: '5px 12px',
++                  borderRadius: '6px',
++                  fontSize: '0.75rem',
++                  fontWeight: 'bold',
++                  cursor: 'pointer',
++                  border: isEquipped ? '1px solid rgba(255, 59, 92, 0.3)' : 'none',
++                  background: isEquipped ? 'rgba(255, 59, 92, 0.15)' : 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
++                  color: '#ffffff',
++                  minWidth: '75px'
++                }}
++              >
++                {isEquipped ? (isRtl ? '╪ح┘╪║╪د╪ة' : 'Unequip') : (isRtl ? '╪ز╪ش┘ç┘è╪▓' : 'Equip')}
++              </button>
++            </div>
++          );
++        })}
++      </div>
++    );
++  };
++
++  const renderBottomNav = (activeTab: 'backpack' | 'store' | 'arena' | 'kingdom' | 'leaderboard') => {
++    return (
++      <div style={styles.bottomNavMock}>
++        <span 
++          style={{ cursor: 'pointer', ...(activeTab === 'backpack' ? styles.activeNavTab : {}) }} 
++          onClick={() => {
++            playSFX('click');
++            setViewingLeaderboard(false);
++            setViewingTournaments(false);
++            setViewingStore(false);
++            setViewingPacks(true);
++            setCreatingPack(false);
++            setViewingPackDetails(null);
++            setCreatingTournament(false);
++            setSelectedTournament(null);
++            fetchPacks();
++          }}
++        >
++          ≡اْ
++        </span>
++        <span 
++          style={{ cursor: 'pointer', ...(activeTab === 'store' ? styles.activeNavTab : {}) }} 
++          onClick={() => {
++            playSFX('click');
++            setViewingLeaderboard(false);
++            setViewingTournaments(false);
++            setViewingPacks(false);
++            setViewingStore(true);
++            setCreatingPack(false);
++            setViewingPackDetails(null);
++            setCreatingTournament(false);
++            setSelectedTournament(null);
++          }}
++        >
++          ≡اؤْ
++        </span>
++        <span 
++          style={{ cursor: 'pointer', ...(activeTab === 'arena' ? styles.activeNavTab : {}) }} 
++          onClick={() => {
++            playSFX('click');
++            setViewingLeaderboard(false);
++            setViewingTournaments(false);
++            setViewingPacks(false);
++            setViewingStore(false);
++            setCreatingPack(false);
++            setViewingPackDetails(null);
++            setCreatingTournament(false);
++            setSelectedTournament(null);
++          }}
++        >
++          ظأ¤ي╕
++        </span>
++        <span 
++          style={{ cursor: 'pointer', ...(activeTab === 'kingdom' ? styles.activeNavTab : {}) }} 
++          onClick={() => {
++            playSFX('click');
++            setViewingLeaderboard(false);
++            setViewingTournaments(true);
++            setViewingPacks(false);
++            setViewingStore(false);
++            setCreatingPack(false);
++            setViewingPackDetails(null);
++            setCreatingTournament(false);
++            setSelectedTournament(null);
++            fetchTournaments();
++          }}
++        >
++          ≡ا░
++        </span>
++        <span 
++          style={{ cursor: 'pointer', ...(activeTab === 'leaderboard' ? styles.activeNavTab : {}) }} 
++          onClick={() => {
++            playSFX('click');
++            setViewingLeaderboard(true);
++            setViewingTournaments(false);
++            setViewingPacks(false);
++            setViewingStore(false);
++            setCreatingPack(false);
++            setViewingPackDetails(null);
++            setCreatingTournament(false);
++            setSelectedTournament(null);
++            loadLeaderboardData();
++          }}
++        >
++          ≡ا
++        </span>
++      </div>
++    );
++  };
++
+   const t = isRtl ? text.ar : text.en;
+ 
+   if (loading || !user) {

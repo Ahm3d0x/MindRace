@@ -661,6 +661,37 @@ export default function ClientPage() {
   const [daysRemaining, setDaysRemaining] = useState<number>(0);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
 
+  // Game Setup states
+  const [setupGameMode, setSetupGameMode] = useState<GameModeType | null>(null);
+  const [setupSelectedCategories, setSetupSelectedCategories] = useState<string[]>(['Mixed']);
+  const [setupNumQuestions, setSetupNumQuestions] = useState<number>(10);
+  const [setupIsCustomQuestions, setSetupIsCustomQuestions] = useState<boolean>(false);
+  const [setupCustomQuestionsCount, setSetupCustomQuestionsCount] = useState<number>(15);
+  const [setupQuestionType, setSetupQuestionType] = useState<string>('MIXED');
+  const [setupCustomTimeEnabled, setSetupCustomTimeEnabled] = useState<boolean>(false);
+  const [setupCustomTimeLimit, setSetupCustomTimeLimit] = useState<number>(30);
+
+  // Training settings (PRACTICE mode only)
+  const [practicePowerUpsEnabled, setPracticePowerUpsEnabled] = useState<boolean>(true);
+  const [practiceAllowedPowerUps, setPracticeAllowedPowerUps] = useState<string[]>([
+    'JOKER', 'FREEZE', 'SHIELD', 'SKIP_QUESTION', 'POINT_MULTIPLIER', 'REVEAL_HINT'
+  ]);
+  const [practiceFreeCounts, setPracticeFreeCounts] = useState<Record<string, number>>({
+    JOKER: 1, FREEZE: 1, SHIELD: 1, SKIP_QUESTION: 1
+  });
+
+  // Progressive Question Reveal states
+  const [revealedQuestionText, setRevealedQuestionText] = useState<string>('');
+  const [isQuestionRevealing, setIsQuestionRevealing] = useState<boolean>(false);
+  const revealIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Shuffled MCQ Options state
+  const [shuffledOptions, setShuffledOptions] = useState<any[]>([]);
+
+  // Time pause/freeze state (for Freeze power-up in Practice Mode)
+  const [isTimerFrozen, setIsTimerFrozen] = useState<boolean>(false);
+  const [currentQuestionTimeLimit, setCurrentQuestionTimeLimit] = useState<number>(30);
+
   // Audio settings states
   const [sfxEnabled, setSfxEnabled] = useState<boolean>(true);
   const [sfxVolume, setSfxVolume] = useState<number>(0.7);
@@ -753,10 +784,613 @@ export default function ClientPage() {
 
   // Navigation and Layout states
 
+  const formatLanguageText = (text: string | undefined | null): string => {
+    if (!text) return '';
+    if (text.includes('\n')) {
+      const parts = text.split('\n').map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const hasArabic = (str: string) => /[\u0600-\u06FF]/.test(str);
+        const arabicPart = parts.find(p => hasArabic(p));
+        const englishPart = parts.find(p => !hasArabic(p));
+        if (isRtl) {
+          return arabicPart || parts[1] || parts[0];
+        } else {
+          return englishPart || parts[0] || parts[1];
+        }
+      }
+    }
+    return text;
+  };
+
   const getLocalizedText = (textObj: any): string => {
     if (!textObj) return '';
-    if (typeof textObj === 'string') return textObj;
-    return isRtl ? (textObj.ar || textObj.en || '') : (textObj.en || textObj.ar || '');
+    let resolved = '';
+    if (typeof textObj === 'string') {
+      resolved = textObj;
+    } else {
+      resolved = isRtl ? (textObj.ar || textObj.en || '') : (textObj.en || textObj.ar || '');
+    }
+    return formatLanguageText(resolved);
+  };
+
+  const getPowerUpCount = (pType: string): number => {
+    if (gameMode === 'PRACTICE') {
+      return practiceFreeCounts[pType] || 0;
+    }
+    return inventoryPowerUps.filter(p => p === pType).length;
+  };
+
+  const renderPowerUpDock = () => {
+    if (isSpectator || isAudienceSpectator) return null;
+    if (gameMode === 'PRACTICE' && !practicePowerUpsEnabled) return null;
+
+    const powerUpsToRender = [
+      { id: 'JOKER', icon: '⚡', name: isRtl ? 'جوكر' : 'Joker' },
+      { id: 'FREEZE', icon: '❄', name: isRtl ? 'تجميد' : 'Freeze' },
+      { id: 'SHIELD', icon: '🛡', name: isRtl ? 'درع' : 'Shield' },
+      { id: 'SKIP_QUESTION', icon: '⏭', name: isRtl ? 'تخطي' : 'Skip' }
+    ];
+
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+        padding: '8px 12px',
+        backgroundColor: 'rgba(11, 13, 26, 0.85)',
+        backdropFilter: 'blur(10px)',
+        border: '1px solid rgba(255, 255, 255, 0.06)',
+        borderRadius: '12px',
+        margin: '10px 0',
+        flexShrink: 0,
+        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+      }}>
+        {powerUpsToRender.map(pu => {
+          const isPractice = gameMode === 'PRACTICE';
+          const isAllowed = !isPractice || practiceAllowedPowerUps.includes(pu.id);
+          if (!isAllowed) return null;
+
+          const count = getPowerUpCount(pu.id);
+          const isActive = activePowerUps.includes(pu.id);
+          const canActivate = count > 0 || (isPractice && user && user.coins >= 50);
+          const isDisabled = answerSubmitted || powerUpBlockActive || isActive || !canActivate;
+
+          return (
+            <button
+              key={pu.id}
+              disabled={isDisabled}
+              onClick={() => activatePowerUp(pu.id)}
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                padding: '8px 6px',
+                borderRadius: '8px',
+                border: isActive 
+                  ? '1px solid #00f2fe' 
+                  : count > 0 
+                    ? '1px solid rgba(0, 242, 254, 0.25)' 
+                    : '1px solid rgba(255, 255, 255, 0.06)',
+                backgroundColor: isActive 
+                  ? 'rgba(0, 242, 254, 0.2)' 
+                  : count > 0 
+                    ? 'rgba(0, 242, 254, 0.05)' 
+                    : 'rgba(255, 255, 255, 0.02)',
+                color: isActive ? '#00f2fe' : count > 0 ? '#ffffff' : '#8a93c0',
+                fontSize: '0.8rem',
+                fontWeight: 'bold',
+                cursor: isDisabled ? 'not-allowed' : 'pointer',
+                transition: 'all 0.2s',
+                opacity: (powerUpBlockActive || (!canActivate && !isActive)) ? 0.4 : 1
+              }}
+              title={pu.name}
+            >
+              <span style={{ fontSize: '1rem' }}>{pu.icon}</span>
+              <span style={{ fontSize: '0.75rem' }}>
+                {isPractice && count === 0 ? (
+                  <span style={{ color: '#ffd700', fontSize: '0.65rem' }}>50🪙</span>
+                ) : (
+                  `x${count}`
+                )}
+              </span>
+            </button>
+          );
+        })}
+        
+        {gameMode !== 'PRACTICE' && (
+          <button
+            disabled={answerSubmitted || powerUpBlockActive}
+            onClick={() => { playSFX('click'); setShowStoreModal(true); }}
+            style={{
+              width: '36px',
+              height: '34px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderRadius: '8px',
+              border: '1px solid rgba(0, 242, 254, 0.3)',
+              backgroundColor: 'rgba(0, 242, 254, 0.1)',
+              color: '#00f2fe',
+              cursor: 'pointer',
+              fontSize: '1rem'
+            }}
+            title={isRtl ? 'المتجر' : 'Store'}
+          >
+            🛒
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const renderSetupScreen = () => {
+    const isPractice = setupGameMode === 'PRACTICE';
+    
+    // Categories checklist helper
+    const categoriesList = [
+      { id: 'Electronics', en: 'Electronics', ar: 'إلكترونيات' },
+      { id: 'Digital Design', en: 'Digital Design', ar: 'تصميم رقمي' },
+      { id: 'Programming', en: 'Programming', ar: 'برمجة' },
+      { id: 'Science', en: 'Science', ar: 'علوم' },
+      { id: 'Mathematics', en: 'Mathematics', ar: 'رياضيات' },
+      { id: 'General Knowledge', en: 'General Knowledge', ar: 'ثقافة عامة' },
+      { id: 'Mixed', en: 'Mixed', ar: 'مختلط' }
+    ];
+
+    const toggleCategory = (catId: string) => {
+      playSFX('click');
+      if (catId === 'Mixed') {
+        setSetupSelectedCategories(['Mixed']);
+      } else {
+        setSetupSelectedCategories(prev => {
+          const filtered = prev.filter(c => c !== 'Mixed');
+          if (filtered.includes(catId)) {
+            const next = filtered.filter(c => c !== catId);
+            return next.length === 0 ? ['Mixed'] : next;
+          } else {
+            return [...filtered, catId];
+          }
+        });
+      }
+    };
+
+    const togglePracticePowerUp = (pType: string) => {
+      playSFX('click');
+      setPracticeAllowedPowerUps(prev => {
+        if (prev.includes(pType)) {
+          return prev.filter(p => p !== pType);
+        } else {
+          return [...prev, pType];
+        }
+      });
+    };
+
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        padding: '16px',
+        backgroundColor: '#0a0d1a',
+        color: '#ffffff',
+        overflowY: 'auto',
+        scrollbarWidth: 'none'
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+          <button 
+            style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '50%',
+              width: '36px',
+              height: '36px',
+              color: '#ffffff',
+              fontSize: '1rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }} 
+            onClick={() => { playSFX('click'); setSetupGameMode(null); }}
+          >
+            ◀
+          </button>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              {isPractice ? (isRtl ? 'إعداد التدريب' : 'Training Mode Setup') : (isRtl ? 'إعداد الجيم' : 'Arena Session Setup')}
+            </h2>
+            <p style={{ fontSize: '0.75rem', color: '#8a93c0', margin: '2px 0 0 0' }}>
+              {isRtl ? 'قم بتخصيص جولتك الحالية' : 'Customize your active session settings'}
+            </p>
+          </div>
+        </div>
+
+        {/* Section 1: Question Packs */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            📚 {isRtl ? 'حزم الأسئلة (الباكجات)' : 'Question Packs'}
+          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {categoriesList.map(cat => {
+              const isSelected = setupSelectedCategories.includes(cat.id);
+              return (
+                <div 
+                  key={cat.id}
+                  onClick={() => toggleCategory(cat.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    backgroundColor: isSelected ? 'rgba(0, 242, 254, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                    border: `1px solid ${isSelected ? '#00f2fe' : 'rgba(255, 255, 255, 0.05)'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: isSelected ? '#ffffff' : '#8a93c0' }}>
+                    {isRtl ? cat.ar : cat.en}
+                  </span>
+                  <div style={{
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '4px',
+                    border: `2px solid ${isSelected ? '#00f2fe' : '#3d4470'}`,
+                    backgroundColor: isSelected ? '#00f2fe' : 'transparent',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#0a0d1a',
+                    fontSize: '0.7rem',
+                    fontWeight: 'bold'
+                  }}>
+                    {isSelected && '✓'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Section 2: Number of Questions */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            🔢 {isRtl ? 'عدد الأسئلة' : 'Number of Questions'}
+          </label>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: setupIsCustomQuestions ? '10px' : 0 }}>
+            {[5, 10, 20, 30].map(count => {
+              const isSelected = !setupIsCustomQuestions && setupNumQuestions === count;
+              return (
+                <button
+                  key={count}
+                  onClick={() => { playSFX('click'); setSetupIsCustomQuestions(false); setSetupNumQuestions(count); }}
+                  style={{
+                    flex: 1,
+                    minWidth: '50px',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: isSelected ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.05)',
+                    backgroundColor: isSelected ? 'rgba(0, 242, 254, 0.12)' : 'rgba(255, 255, 255, 0.02)',
+                    color: isSelected ? '#00f2fe' : '#8a93c0',
+                    fontSize: '0.8rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s'
+                  }}
+                >
+                  {count}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => { playSFX('click'); setSetupIsCustomQuestions(true); }}
+              style={{
+                flex: 1,
+                minWidth: '70px',
+                padding: '8px 10px',
+                borderRadius: '8px',
+                border: setupIsCustomQuestions ? '1px solid #00f2fe' : '1px solid rgba(255, 255, 255, 0.05)',
+                backgroundColor: setupIsCustomQuestions ? 'rgba(0, 242, 254, 0.12)' : 'rgba(255, 255, 255, 0.02)',
+                color: setupIsCustomQuestions ? '#00f2fe' : '#8a93c0',
+                fontSize: '0.8rem',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                transition: 'all 0.15s'
+              }}
+            >
+              {isRtl ? 'مخصص' : 'Custom'}
+            </button>
+          </div>
+          {setupIsCustomQuestions && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', backgroundColor: 'rgba(255, 255, 255, 0.02)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#8a93c0' }}>
+                <span>{isRtl ? 'اختر عدد الأسئلة:' : 'Select count:'}</span>
+                <span style={{ color: '#00f2fe', fontWeight: 'bold' }}>{setupCustomQuestionsCount}</span>
+              </div>
+              <input 
+                type="range"
+                min="3"
+                max="50"
+                value={setupCustomQuestionsCount}
+                onChange={(e) => setSetupCustomQuestionsCount(parseInt(e.target.value))}
+                style={{ width: '100%', accentColor: '#00f2fe', cursor: 'pointer' }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Section 3: Question Type */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            🎯 {isRtl ? 'نوع الأسئلة' : 'Question Type'}
+          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {[
+              { type: 'MIXED', ar: 'مختلط (كل الأنواع)', en: 'Mixed Session' },
+              { type: 'MULTIPLE_CHOICE', ar: 'اختيار من متعدد فقط', en: 'Multiple Choice Only' },
+              { type: 'TRUE_FALSE', ar: 'صح / خطأ فقط', en: 'True / False Only' },
+              { type: 'WRITE_ANSWER', ar: 'كتابة مباشرة فقط', en: 'Write Answer Only' },
+              { type: 'FORMULA', ar: 'مسائل رياضية وحسابات فقط', en: 'Formula Mode Only' }
+            ].map(item => {
+              const isSelected = setupQuestionType === item.type;
+              return (
+                <div 
+                  key={item.type}
+                  onClick={() => { playSFX('click'); setSetupQuestionType(item.type); }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    backgroundColor: isSelected ? 'rgba(0, 242, 254, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                    border: `1px solid ${isSelected ? '#00f2fe' : 'rgba(255, 255, 255, 0.05)'}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    border: `2px solid ${isSelected ? '#00f2fe' : '#3d4470'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}>
+                    {isSelected && (
+                      <div style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: '#00f2fe'
+                      }} />
+                    )}
+                  </div>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: isSelected ? '#ffffff' : '#8a93c0' }}>
+                    {isRtl ? item.ar : item.en}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Section 4: Timer Limits */}
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            ⏱️ {isRtl ? 'زمن الإجابة' : 'Question Time Limit'}
+          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+            <div 
+              onClick={() => { playSFX('click'); setSetupCustomTimeEnabled(!setupCustomTimeEnabled); }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>
+                  {isRtl ? 'تعديل يدوي للوقت' : 'Manual Time Override'}
+                </span>
+                <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                  {isRtl ? 'تعطيل لترك النظام يحدد الوقت تلقائياً' : 'Disable to let system determine timers automatically'}
+                </span>
+              </div>
+              <div style={{
+                width: '36px',
+                height: '20px',
+                borderRadius: '10px',
+                backgroundColor: setupCustomTimeEnabled ? '#00f2fe' : 'rgba(255,255,255,0.1)',
+                position: 'relative',
+                transition: 'background-color 0.2s'
+              }}>
+                <div style={{
+                  width: '16px',
+                  height: '16px',
+                  borderRadius: '50%',
+                  backgroundColor: '#ffffff',
+                  position: 'absolute',
+                  top: '2px',
+                  left: setupCustomTimeEnabled ? '18px' : '2px',
+                  transition: 'left 0.2s'
+                }} />
+              </div>
+            </div>
+
+            {setupCustomTimeEnabled ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#8a93c0' }}>
+                  <span>{isRtl ? 'الوقت لكل سؤال (ثوان):' : 'Seconds per question:'}</span>
+                  <span style={{ color: '#00f2fe', fontWeight: 'bold' }}>{setupCustomTimeLimit}s</span>
+                </div>
+                <input 
+                  type="range"
+                  min="5"
+                  max="120"
+                  step="5"
+                  value={setupCustomTimeLimit}
+                  onChange={(e) => setSetupCustomTimeLimit(parseInt(e.target.value))}
+                  style={{ width: '100%', accentColor: '#00f2fe', cursor: 'pointer' }}
+                />
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.7rem', color: '#8a93c0', marginTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '8px', lineHeight: '1.4' }}>
+                ℹ️ {isRtl ? 'أوقات النظام التلقائية:' : 'System Auto Timers:'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                  <span>{isRtl ? 'اختيار من متعدد' : 'Multiple Choice'}: 15s</span>
+                  <span>{isRtl ? 'صح/خطأ' : 'True/False'}: 8s</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>{isRtl ? 'إجابة مكتوبة' : 'Write Answer'}: 30s</span>
+                  <span>{isRtl ? 'مسائل وحسابات' : 'Formulas'}: 45s - 60s</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Section 5: Training Mode Settings (Practice only) */}
+        {isPractice && (
+          <div style={{ marginBottom: '20px' }}>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#00f2fe', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              ⚙️ {isRtl ? 'إعدادات وضع التدريب' : 'Training Mode Settings'}
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+              
+              <div 
+                onClick={() => { playSFX('click'); setPracticePowerUpsEnabled(!practicePowerUpsEnabled); }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>
+                    {isRtl ? 'تفعيل المساعدات (Power-Ups)' : 'Power-Ups Enabled'}
+                  </span>
+                  <span style={{ fontSize: '0.7rem', color: '#8a93c0' }}>
+                    {isRtl ? 'السماح باستخدام المساعدات أثناء هذا التدريب' : 'Allow using power-ups during this practice'}
+                  </span>
+                </div>
+                <div style={{
+                  width: '36px',
+                  height: '20px',
+                  borderRadius: '10px',
+                  backgroundColor: practicePowerUpsEnabled ? '#00f2fe' : 'rgba(255,255,255,0.1)',
+                  position: 'relative',
+                  transition: 'background-color 0.2s'
+                }}>
+                  <div style={{
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    backgroundColor: '#ffffff',
+                    position: 'absolute',
+                    top: '2px',
+                    left: practicePowerUpsEnabled ? '18px' : '2px',
+                    transition: 'left 0.2s'
+                  }} />
+                </div>
+              </div>
+
+              {practicePowerUpsEnabled && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#8a93c0', marginBottom: '4px' }}>
+                    {isRtl ? 'المساعدات المتاحة:' : 'Available Power-Ups:'}
+                  </span>
+                  {[
+                    { id: 'JOKER', label: isRtl ? '⚡ جوكر (مضاعف)' : '⚡ Joker' },
+                    { id: 'FREEZE', label: isRtl ? '❄ تجميد' : '❄ Freeze' },
+                    { id: 'POINT_MULTIPLIER', label: isRtl ? '✨ مضاعف النقاط' : '✨ Double Score' },
+                    { id: 'SHIELD', label: isRtl ? '🛡 درع' : '🛡 Shield' },
+                    { id: 'SKIP_QUESTION', label: isRtl ? '⏭ تخطي' : '⏭ Skip' },
+                    { id: 'REVEAL_HINT', label: isRtl ? '💡 50/50' : '💡 50/50' }
+                  ].map(pu => {
+                    const isPuAllowed = practiceAllowedPowerUps.includes(pu.id);
+                    return (
+                      <div 
+                        key={pu.id}
+                        onClick={() => togglePracticePowerUp(pu.id)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 10px',
+                          backgroundColor: 'rgba(255,255,255,0.01)',
+                          border: `1px solid ${isPuAllowed ? 'rgba(0, 242, 254, 0.2)' : 'transparent'}`,
+                          borderRadius: '6px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{ fontSize: '0.75rem', color: isPuAllowed ? '#ffffff' : '#8a93c0' }}>{pu.label}</span>
+                        <div style={{
+                          width: '14px',
+                          height: '14px',
+                          borderRadius: '3px',
+                          border: `1.5px solid ${isPuAllowed ? '#00f2fe' : '#3d4470'}`,
+                          backgroundColor: isPuAllowed ? '#00f2fe' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#0a0d1a',
+                          fontSize: '0.6rem',
+                          fontWeight: 'bold'
+                        }}>
+                          {isPuAllowed && '✓'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Start Game / Submit Panel */}
+        <div style={{ display: 'flex', gap: '10px', marginTop: 'auto', paddingTop: '20px' }}>
+          <button
+            onClick={() => { playSFX('click'); setSetupGameMode(null); }}
+            style={{
+              flex: 1,
+              padding: '14px',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '8px',
+              color: '#ffffff',
+              fontSize: '0.9rem',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            {isRtl ? 'إلغاء' : 'Cancel'}
+          </button>
+          <button
+            onClick={() => {
+              playSFX('slam');
+              startSoloGame(setupGameMode!);
+              setSetupGameMode(null);
+            }}
+            style={{
+              flex: 2,
+              padding: '14px',
+              backgroundColor: '#00f2fe',
+              background: 'linear-gradient(135deg, #00f2fe 0%, #4facfe 100%)',
+              border: 'none',
+              borderRadius: '8px',
+              color: '#0e111f',
+              fontSize: '0.9rem',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              boxShadow: '0 0 15px rgba(0, 242, 254, 0.3)'
+            }}
+          >
+            🚀 {isRtl ? 'ابدأ الجلسة' : 'Start Session'}
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const getEquippedBorderStyle = (borderKey: string | null | undefined, rank: string): React.CSSProperties => {
@@ -1881,7 +2515,50 @@ export default function ClientPage() {
 
   function loadQuestion(index: number) {
     setCurrentQIndex(index);
-    setTimeLeft(gameMode === 'PRACTICE' ? 99 : 30);
+    const nextQ = gameQuestions[index];
+
+    // 1. Shuffle MCQ Options
+    if (nextQ && nextQ.options) {
+      if (nextQ.type === 'MULTIPLE_CHOICE' || nextQ.type === 'CIRCUIT_QUESTION' || nextQ.type === 'IMAGE_QUESTION') {
+        const shuffled = [...nextQ.options].sort(() => Math.random() - 0.5);
+        setShuffledOptions(shuffled);
+      } else {
+        setShuffledOptions(nextQ.options);
+      }
+    } else {
+      setShuffledOptions([]);
+    }
+
+    // 2. Gradual Text Reveal & Timer delay
+    if (nextQ) {
+      const fullText = getLocalizedText(nextQ.body);
+      const words = fullText.split(' ');
+      setRevealedQuestionText('');
+      setIsQuestionRevealing(true);
+      
+      let wordIdx = 0;
+      if (revealIntervalRef.current) clearInterval(revealIntervalRef.current);
+      
+      const timeLimit = getQuestionTimeLimit(nextQ);
+      setCurrentQuestionTimeLimit(timeLimit);
+      setTimeLeft(timeLimit);
+      
+      revealIntervalRef.current = setInterval(() => {
+        wordIdx++;
+        if (wordIdx >= words.length) {
+          clearInterval(revealIntervalRef.current!);
+          setRevealedQuestionText(fullText);
+          setIsQuestionRevealing(false);
+        } else {
+          setRevealedQuestionText(words.slice(0, wordIdx + 1).join(' '));
+        }
+      }, 150);
+    } else {
+      setRevealedQuestionText('');
+      setIsQuestionRevealing(false);
+      setTimeLeft(30);
+    }
+
     setBuzzerActive(gameMode !== 'PRACTICE');
     setIsBuzzed(false);
     setSelectedOption(null);
@@ -1892,9 +2569,9 @@ export default function ClientPage() {
     setAnswerSubmitted(false);
     setIsAnswerCorrect(null);
     setActivePowerUps([]);
+    setIsTimerFrozen(false);
 
     // Sort order IDs synchronously when loading a sorting question
-    const nextQ = gameQuestions[index];
     if (nextQ?.type === 'ORDERING_QUESTION' && nextQ.options) {
       const shuffled = [...nextQ.options].sort(() => Math.random() - 0.5);
       setOrderIds(shuffled.map(o => o.id));
@@ -2211,12 +2888,8 @@ export default function ClientPage() {
       return;
     }
 
-    if (gameMode === 'PRACTICE') {
-      if (timerRef.current) clearInterval(timerRef.current);
-      return;
-    }
-
     timerRef.current = setInterval(() => {
+      if (isQuestionRevealing || isTimerFrozen) return; // Pause timer during revealing or freeze!
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timerRef.current!);
@@ -2238,7 +2911,7 @@ export default function ClientPage() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [screen, currentQIndex, answerSubmitted, gameMode, lives, currentRoom]);
+  }, [screen, currentQIndex, answerSubmitted, gameMode, lives, currentRoom, isQuestionRevealing, isTimerFrozen]);
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -2825,6 +3498,35 @@ export default function ClientPage() {
     }
   };
 
+  const getQuestionTimeLimit = (q: any): number => {
+    if (gameMode === 'PRACTICE' || setupGameMode === 'PRACTICE') {
+      if (setupCustomTimeEnabled && setupCustomTimeLimit) {
+        return setupCustomTimeLimit;
+      }
+    } else {
+      if (setupCustomTimeEnabled && setupCustomTimeLimit) {
+        return setupCustomTimeLimit;
+      }
+    }
+
+    if (!q) return 30;
+
+    const isFormula = q.type === 'FORMULA_QUESTION' || q.type === 'FORMULA' || (q.category && (q.category.toLowerCase().includes('math') || q.category.toLowerCase().includes('formula')));
+    if (isFormula) {
+      return q.difficulty === 'Hard' ? 60 : 45;
+    }
+    if (q.type === 'MULTIPLE_CHOICE' || q.type === 'CIRCUIT_QUESTION' || q.type === 'IMAGE_QUESTION') {
+      return 15;
+    }
+    if (q.type === 'TRUE_FALSE') {
+      return 8;
+    }
+    if (q.type === 'FILL_IN_THE_BLANK' || q.type === 'SHORT_ANSWER' || q.type === 'CODING_QUESTION') {
+      return 30;
+    }
+    return 30;
+  };
+
   const startSoloGame = async (mode: GameModeType) => {
     playSFX('slam');
     setGameMode(mode);
@@ -2840,10 +3542,10 @@ export default function ClientPage() {
     let questionsToLoad = SAMPLE_QUESTIONS;
     try {
       let query = supabase.from('questions').select('*');
-      if (mode !== 'DAILY_CHALLENGE') {
-        query = query.limit(mode === 'SURVIVAL' ? 20 : 10);
-      } else {
+      if (mode === 'DAILY_CHALLENGE') {
         query = query.limit(10);
+      } else {
+        query = query.limit(100);
       }
 
       const { data, error } = await query;
@@ -2866,12 +3568,70 @@ export default function ClientPage() {
           explanation: q.explanation,
           createdAt: q.created_at ? new Date(q.created_at) : new Date()
         }));
-        if (mode !== 'DAILY_CHALLENGE') {
-          questionsToLoad.sort(() => Math.random() - 0.5);
-        }
       }
     } catch (e) {
       console.error('Error fetching questions:', e);
+    }
+
+    if (mode !== 'DAILY_CHALLENGE') {
+      let filtered = [...questionsToLoad];
+
+      if (!setupSelectedCategories.includes('Mixed') && setupSelectedCategories.length > 0) {
+        filtered = filtered.filter(q => {
+          const cat = q.category?.toLowerCase() || '';
+          return setupSelectedCategories.some(sel => {
+            const selLower = sel.toLowerCase();
+            if (selLower === 'electronics') return cat.includes('electronics') || cat.includes('إلكترونيات');
+            if (selLower === 'digital design') return cat.includes('digital') || cat.includes('رقمي');
+            if (selLower === 'programming') return cat.includes('programming') || cat.includes('برمجة');
+            if (selLower === 'science') return cat.includes('science') || cat.includes('علوم') || cat.includes('physics') || cat.includes('فيزياء') || cat.includes('chemistry') || cat.includes('كيمياء');
+            if (selLower === 'mathematics') return cat.includes('math') || cat.includes('رياضيات') || cat.includes('arithmetic');
+            if (selLower === 'general knowledge') return cat.includes('general') || cat.includes('عام') || cat.includes('history') || cat.includes('تاريخ');
+            return cat.includes(selLower);
+          });
+        });
+      }
+
+      if (filtered.length === 0) {
+        filtered = [...questionsToLoad];
+      }
+
+      if (setupQuestionType !== 'MIXED') {
+        const isFormula = (q: any) => {
+          return q.type === 'FORMULA_QUESTION' || q.type === 'FORMULA' || (q.category && (q.category.toLowerCase().includes('math') || q.category.toLowerCase().includes('formula')));
+        };
+        
+        filtered = filtered.filter(q => {
+          if (setupQuestionType === 'MULTIPLE_CHOICE') {
+            return q.type === 'MULTIPLE_CHOICE' || q.type === 'CIRCUIT_QUESTION' || q.type === 'IMAGE_QUESTION';
+          }
+          if (setupQuestionType === 'TRUE_FALSE') {
+            return q.type === 'TRUE_FALSE';
+          }
+          if (setupQuestionType === 'WRITE_ANSWER') {
+            return (q.type as any) === 'FILL_IN_THE_BLANK' || (q.type as any) === 'WRITE_ANSWER' || (q.type as any) === 'CODING_QUESTION' || (q.type as any) === 'SHORT_ANSWER';
+          }
+          if (setupQuestionType === 'FORMULA') {
+            return isFormula(q);
+          }
+          return true;
+        });
+      }
+
+      if (filtered.length === 0) {
+        filtered = [...questionsToLoad];
+      }
+
+      filtered.sort(() => Math.random() - 0.5);
+
+      const limit = setupIsCustomQuestions ? setupCustomQuestionsCount : setupNumQuestions;
+      questionsToLoad = filtered.slice(0, limit);
+    }
+
+    if (mode === 'PRACTICE') {
+      setPracticeFreeCounts({
+        JOKER: 1, FREEZE: 1, SHIELD: 1, SKIP_QUESTION: 1
+      });
     }
 
     setGameQuestions(questionsToLoad);
@@ -3179,6 +3939,33 @@ export default function ClientPage() {
     
     const q = gameQuestions[currentQIndex];
 
+    // Practice Mode Economy Check
+    if (gameMode === 'PRACTICE') {
+      const freeCount = practiceFreeCounts[type] || 0;
+      if (freeCount > 0) {
+        // Use free copy
+        setPracticeFreeCounts(prev => ({ ...prev, [type]: prev[type] - 1 }));
+      } else {
+        // Paid copy
+        if (!user) return;
+        if (user.coins < 50) {
+          triggerGamingAlert(isRtl ? 'ليس لديك نقود كافية!' : 'Not enough coins!', 'error');
+          return;
+        }
+        // Deduct 50 coins
+        const { error } = await supabase
+          .from('profiles')
+          .update({ coins: user.coins - 50 })
+          .eq('id', user.id);
+        if (error) {
+          triggerGamingAlert(isRtl ? 'فشل الشراء والاستخدام!' : 'Failed to purchase and use!', 'error');
+          return;
+        }
+        await refreshProfile();
+        triggerGamingAlert(isRtl ? 'تم الشراء والاستخدام (-50 🪙)' : 'Purchased & Activated (-50 🪙)', 'success');
+      }
+    }
+
     // Steal logic
     if (type === 'STEAL') {
       if (!isBuzzed || buzzedUser === user?.username) {
@@ -3264,6 +4051,12 @@ export default function ClientPage() {
         if (opp) {
           gameSyncRef.current.broadcastPowerUp('FREEZE', opp.userId);
         }
+      } else {
+        triggerGamingAlert(isRtl ? 'تم تجميد الوقت لـ 10 ثوان!' : 'Time frozen for 10s!', 'success');
+        setIsTimerFrozen(true);
+        setTimeout(() => {
+          setIsTimerFrozen(false);
+        }, 10000);
       }
     }
 
@@ -7442,6 +8235,8 @@ Each object in the array must strictly match the following JSON structure:
               renderTournamentsView()
             ) : viewingPacks ? (
               renderBackpackView()
+            ) : setupGameMode ? (
+              renderSetupScreen()
             ) : (() => {
               const todayDateStr = new Date().toISOString().split('T')[0];
               const isDailyCompleted = (user.stats as any)?.lastDailyChallengeCompleted === todayDateStr;
@@ -7541,7 +8336,7 @@ Each object in the array must strictly match the following JSON structure:
                   }}>
                     <button 
                       style={styles.playHeroBtn} 
-                      onClick={() => startSoloGame('TIMED_CHALLENGE')}
+                      onClick={() => setSetupGameMode('TIMED_CHALLENGE')}
                       className="animate-float"
                     >
                       {t.play}
@@ -7580,7 +8375,7 @@ Each object in the array must strictly match the following JSON structure:
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       {renderConnectionIndicators(true)}
                       <button
-                        onClick={() => { playSFX('click'); startSoloGame('TIMED_CHALLENGE'); }}
+                        onClick={() => { playSFX('click'); setSetupGameMode('TIMED_CHALLENGE'); }}
                         style={{
                           padding: '6px 12px',
                           borderRadius: '4px',
@@ -7603,7 +8398,7 @@ Each object in the array must strictly match the following JSON structure:
                     onScroll={handleScroll}
                     style={{ display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', flex: 1, minHeight: 0, margin: '12px 0', paddingRight: '4px' }}>
                     <div style={styles.modesContainer}>
-                      <div style={styles.modeCard} onClick={() => startSoloGame('PRACTICE')}>
+                      <div style={styles.modeCard} onClick={() => setSetupGameMode('PRACTICE')}>
                         <span style={styles.modeIcon}>⚗️</span>
                         <div style={styles.modeMeta}>
                           <h4 style={styles.modeTitle}>{t.soloPractice}</h4>
@@ -7611,7 +8406,7 @@ Each object in the array must strictly match the following JSON structure:
                         </div>
                       </div>
 
-                      <div style={styles.modeCard} onClick={() => startSoloGame('SURVIVAL')}>
+                      <div style={styles.modeCard} onClick={() => setSetupGameMode('SURVIVAL')}>
                         <span style={styles.modeIcon}>❤️</span>
                         <div style={styles.modeMeta}>
                           <h4 style={styles.modeTitle}>{t.survivalMode}</h4>
@@ -8922,11 +9717,62 @@ Each object in the array must strictly match the following JSON structure:
 
                 <div style={styles.hudTimerPanel}>
                   <div style={{
-                    ...styles.timerCircularRing,
-                    borderColor: gameMode === 'PRACTICE' ? '#8a93c0' : timeLeft <= 5 ? '#ff3b5c' : '#00f2fe',
-                    animation: (gameMode !== 'PRACTICE' && timeLeft <= 5) ? 'pulse-glow 0.5s infinite' : 'none'
+                    position: 'relative',
+                    width: '64px',
+                    height: '64px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
                   }}>
-                    {gameMode === 'PRACTICE' ? '∞' : timeLeft}
+                    <svg width="64" height="64" style={{ transform: 'rotate(-90deg)' }}>
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r="26"
+                        fill="transparent"
+                        stroke="rgba(255, 255, 255, 0.08)"
+                        strokeWidth="4"
+                      />
+                      <circle
+                        cx="32"
+                        cy="32"
+                        r="26"
+                        fill="transparent"
+                        stroke={
+                          gameMode === 'PRACTICE'
+                            ? '#8a93c0'
+                            : (timeLeft / currentQuestionTimeLimit) >= 0.7
+                              ? '#00ff87'
+                              : (timeLeft / currentQuestionTimeLimit) >= 0.4
+                                ? '#ffcc00'
+                                : '#ff3b5c'
+                        }
+                        strokeWidth="4"
+                        strokeDasharray="163.36"
+                        strokeDashoffset={
+                          gameMode === 'PRACTICE'
+                            ? 0
+                            : 163.36 * (1 - timeLeft / currentQuestionTimeLimit)
+                        }
+                        strokeLinecap="round"
+                        style={{ transition: 'stroke-dashoffset 1s linear, stroke 0.3s ease' }}
+                      />
+                    </svg>
+                    <div style={{
+                      position: 'absolute',
+                      fontSize: '1.1rem',
+                      fontWeight: 800,
+                      color: gameMode === 'PRACTICE'
+                        ? '#8a93c0'
+                        : (timeLeft / currentQuestionTimeLimit) >= 0.7
+                          ? '#00ff87'
+                          : (timeLeft / currentQuestionTimeLimit) >= 0.4
+                            ? '#ffcc00'
+                            : '#ff3b5c'
+                    }}>
+                      {gameMode === 'PRACTICE' ? '∞' : timeLeft}
+                    </div>
                   </div>
                   <span style={styles.hudRoundCounter}>{t.round} {currentQIndex + 1}/{gameQuestions.length}</span>
                 </div>
@@ -8934,6 +9780,30 @@ Each object in the array must strictly match the following JSON structure:
                 <div style={{ ...styles.hudTeamPanel, alignItems: 'flex-end' }}>
                   <span style={styles.hudTeamName} className="text-glow-accent">{rightTeamName}</span>
                   <span style={styles.hudTeamScore}>{rightTeamScore} pts</span>
+                </div>
+              </div>
+
+              {/* Detailed Session HUD Info Bar */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '6px 12px',
+                backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                color: '#8a93c0',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span>{isRtl ? 'الجولة' : 'Round'} <strong style={{ color: '#ffffff' }}>{currentRoom ? (currentRoom.currentRound || 1) : 1} / {currentRoom ? (currentRoom.config?.maxRounds || 5) : 5}</strong></span>
+                  <span>|</span>
+                  <span>{isRtl ? 'السؤال' : 'Question'} <strong style={{ color: '#ffffff' }}>{currentQIndex + 1} / {gameQuestions.length}</strong></span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ color: '#00ff87' }}>+{gameMode === 'PRACTICE' ? 50 : 100} {isRtl ? 'صحيح' : 'Correct'}</span>
+                  <span style={{ color: '#ff3b5c' }}>-{gameMode === 'PRACTICE' ? 20 : 30} {isRtl ? 'خطأ' : 'Wrong'}</span>
                 </div>
               </div>
 
@@ -8984,7 +9854,7 @@ Each object in the array must strictly match the following JSON structure:
                 </div>
                 
                 <div style={styles.qTextBody}>
-                  {getLocalizedText(gameQuestions[currentQIndex].body)}
+                  {isQuestionRevealing ? revealedQuestionText : getLocalizedText(gameQuestions[currentQIndex].body)}
                 </div>
 
                 {/* Buzzer Alert */}
@@ -9011,53 +9881,56 @@ Each object in the array must strictly match the following JSON structure:
                   gameQuestions[currentQIndex].type === 'CIRCUIT_QUESTION' ||
                   gameQuestions[currentQIndex].type === 'IMAGE_QUESTION') && (
                   <div style={styles.mcqGrid}>
-                    {gameQuestions[currentQIndex].options?.map((opt) => (
-                      <button
-                        key={opt.id}
-                        disabled={isInputDisabled || hiddenOptions.includes(opt.id)}
-                        onClick={() => {
-                          playSFX('click');
-                          setSelectedOption(opt.id);
-                          if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
-                            const selfId = user?.id;
-                            const activeParts = gameSyncRef.current.activeParticipants || [];
-                            const selfPart = activeParts.find(p => p.userId === selfId);
-                            const myTeamId = selfPart?.teamId || null;
-                            gameSyncRef.current.sendChatMessage('__VOTE__:' + opt.id, myTeamId);
-                          }
-                        }}
-                        style={{
-                          ...styles.answerCardBtn,
-                          borderColor: selectedOption === opt.id ? '#00f2fe' : 'rgba(255, 255, 255, 0.08)',
-                          backgroundColor: selectedOption === opt.id ? 'rgba(0, 242, 254, 0.08)' : 'rgba(17, 19, 31, 0.65)',
-                          opacity: hiddenOptions.includes(opt.id) ? 0.25 : 1,
-                          cursor: hiddenOptions.includes(opt.id) ? 'not-allowed' : 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          width: '100%'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={styles.optLetterBadge}>{opt.id.toUpperCase()}</span>
-                          <span style={styles.optText}>{getLocalizedText(opt.text)}</span>
-                        </div>
-                        {bt === 'TEAM_CONSULTATION' && teammateVotes[opt.id]?.length > 0 && (
-                          <div style={{
+                    {shuffledOptions.map((opt, optIndex) => {
+                      const letter = String.fromCharCode(65 + optIndex); // A, B, C, D...
+                      return (
+                        <button
+                          key={opt.id}
+                          disabled={isInputDisabled || hiddenOptions.includes(opt.id)}
+                          onClick={() => {
+                            playSFX('click');
+                            setSelectedOption(opt.id);
+                            if (bt === 'TEAM_CONSULTATION' && currentRoom && gameSyncRef.current) {
+                              const selfId = user?.id;
+                              const activeParts = gameSyncRef.current.activeParticipants || [];
+                              const selfPart = activeParts.find(p => p.userId === selfId);
+                              const myTeamId = selfPart?.teamId || null;
+                              gameSyncRef.current.sendChatMessage('__VOTE__:' + opt.id, myTeamId);
+                            }
+                          }}
+                          style={{
+                            ...styles.answerCardBtn,
+                            borderColor: selectedOption === opt.id ? '#00f2fe' : 'rgba(255, 255, 255, 0.08)',
+                            backgroundColor: selectedOption === opt.id ? 'rgba(0, 242, 254, 0.08)' : 'rgba(17, 19, 31, 0.65)',
+                            opacity: hiddenOptions.includes(opt.id) ? 0.25 : 1,
+                            cursor: hiddenOptions.includes(opt.id) ? 'not-allowed' : 'pointer',
                             display: 'flex',
-                            gap: '4px',
                             alignItems: 'center',
-                            fontSize: '0.75rem',
-                            backgroundColor: 'rgba(0, 242, 254, 0.2)',
-                            padding: '2px 8px',
-                            borderRadius: '10px',
-                            color: '#00f2fe'
-                          }}>
-                            👥 {teammateVotes[opt.id].length} ({teammateVotes[opt.id].join(', ')})
+                            justifyContent: 'space-between',
+                            width: '100%'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={styles.optLetterBadge}>{letter}</span>
+                            <span style={styles.optText}>{getLocalizedText(opt.text)}</span>
                           </div>
-                        )}
-                      </button>
-                    ))}
+                          {bt === 'TEAM_CONSULTATION' && teammateVotes[opt.id]?.length > 0 && (
+                            <div style={{
+                              display: 'flex',
+                              gap: '4px',
+                              alignItems: 'center',
+                              fontSize: '0.75rem',
+                              backgroundColor: 'rgba(0, 242, 254, 0.2)',
+                              padding: '2px 8px',
+                              borderRadius: '10px',
+                              color: '#00f2fe'
+                            }}>
+                              👥 {teammateVotes[opt.id].length} ({teammateVotes[opt.id].join(', ')})
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -9397,6 +10270,9 @@ Each object in the array must strictly match the following JSON structure:
                 </div>
               )}
 
+              {/* Power-up Dock (ALWAYS visible, placed outside gameActionBar!) */}
+              {renderPowerUpDock()}
+
               <div style={styles.gameActionBar}>
                 {isAudienceSpectator ? (
                   !spectatorAnswerSubmitted ? (
@@ -9471,167 +10347,125 @@ Each object in the array must strictly match the following JSON structure:
                   </div>
                 ) : (
                   <>
-                    <div style={styles.powerUpInventoryBox}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <span style={styles.inventoryTitle}>{t.powerups}</span>
-                        {isTeamMode && (
-                          <div style={{ position: 'relative' }}>
-                            <button
-                              onClick={() => setShowSignalMenu(!showSignalMenu)}
-                              style={{
-                                backgroundColor: 'rgba(0, 242, 254, 0.1)',
-                                border: '1px solid rgba(0, 242, 254, 0.3)',
-                                borderRadius: '4px',
-                                padding: '2px 6px',
-                                fontSize: '0.6rem',
-                                color: '#00f2fe',
-                                cursor: 'pointer',
-                                fontWeight: 700,
-                                outline: 'none'
-                              }}
-                            >
-                              📣 {isRtl ? 'إشارة' : 'SIGNAL'}
-                            </button>
-                            {showSignalMenu && (
-                              <div style={{
-                                position: 'absolute',
-                                bottom: '24px',
-                                right: isRtl ? 'auto' : 0,
-                                left: isRtl ? 0 : 'auto',
-                                backgroundColor: '#111528',
-                                border: '1px solid rgba(255,255,255,0.1)',
-                                borderRadius: '6px',
-                                padding: '4px',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '4px',
-                                zIndex: 1000,
-                                width: '120px',
-                                boxShadow: '0 0 10px rgba(0,0,0,0.5)'
-                              }}>
-                                {[
-                                  { text: isRtl ? "ساعدني هنا!" : "Need help!", icon: "🆘" },
-                                  { text: isRtl ? "جمّده!" : "Freeze them!", icon: "❄️" },
-                                  { text: isRtl ? "ركّز!" : "Focus!", icon: "🎯" },
-                                  { text: isRtl ? "أعرف الإجابة!" : "I know this!", icon: "🧠" }
-                                ].map((sig, idx) => (
-                                  <button
-                                    key={idx}
-                                    onClick={() => {
-                                      const activeParts = gameSyncRef.current?.activeParticipants || [];
-                                      const selfPart = activeParts.find(p => p.userId === user?.id);
-                                      const myTeamId = selfPart?.teamId || null;
-                                      gameSyncRef.current?.sendChatMessage(sig.text, myTeamId);
-                                      setShowSignalMenu(false);
-                                      playSFX('click');
-                                    }}
-                                    style={{
-                                      backgroundColor: 'transparent',
-                                      border: 'none',
-                                      color: '#ffffff',
-                                      padding: '4px 6px',
-                                      fontSize: '0.65rem',
-                                      textAlign: isRtl ? 'right' : 'left',
-                                      cursor: 'pointer',
-                                      borderRadius: '4px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '4px',
-                                      direction: isRtl ? 'rtl' : 'ltr',
-                                      width: '100%'
-                                    }}
-                                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)')}
-                                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                                  >
-                                    <span>{sig.icon}</span>
-                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.text}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <div style={styles.powerupList}>
-                        {inventoryPowerUps.map((p, idx) => (
+                    <div style={{ display: 'flex', gap: '8px', width: '100%', alignItems: 'center', height: '100%' }}>
+                      {/* Signal button next to main actions if in Team Mode */}
+                      {isTeamMode && (
+                        <div style={{ position: 'relative', flexShrink: 0 }}>
                           <button
-                            key={p + '-' + idx}
-                            disabled={answerSubmitted || powerUpBlockActive}
-                            onClick={() => activatePowerUp(p)}
+                            onClick={() => setShowSignalMenu(!showSignalMenu)}
                             style={{
-                              ...styles.powerUpChipBtn,
-                              backgroundColor: activePowerUps.includes(p) ? '#00f2fe' : 'rgba(255, 255, 255, 0.04)',
-                              color: activePowerUps.includes(p) ? '#05060f' : '#f0f4ff',
-                              borderColor: activePowerUps.includes(p) ? '#00f2fe' : 'rgba(255, 255, 255, 0.08)',
-                              opacity: powerUpBlockActive ? 0.3 : 1
-                            }}
-                          >
-                            {p === 'JOKER' && '⚡ Joker'}
-                            {p === 'FREEZE' && '❄ Freeze'}
-                            {p === 'SHIELD' && '🛡 Shield'}
-                            {p === 'REVEAL_HINT' && '💡 Hint'}
-                            {p === 'DOUBLE_CHANCE' && '🎯 Double'}
-                            {p === 'STEAL' && '🪝 Steal'}
-                            {p === 'TIME_BOOST' && '⏱ Boost'}
-                            {p === 'POINT_MULTIPLIER' && '✨ Multiplier'}
-                            {p === 'CATEGORY_SWAP' && '🔄 Swap'}
-                            {p === 'SKIP_QUESTION' && '⏭ Skip'}
-                            {p === 'BLOCK_POWER_UP' && '🚫 Block'}
-                          </button>
-                        ))}
-                        {inventoryPowerUps.length < 4 && gameMode !== 'PRACTICE' && (
-                          <button
-                            disabled={answerSubmitted || powerUpBlockActive}
-                            onClick={() => { playSFX('click'); setShowStoreModal(true); }}
-                            style={{
-                              ...styles.powerUpChipBtn,
                               backgroundColor: 'rgba(0, 242, 254, 0.1)',
+                              border: '1px solid rgba(0, 242, 254, 0.3)',
+                              borderRadius: '8px',
+                              padding: '14px 10px',
+                              fontSize: '0.9rem',
                               color: '#00f2fe',
-                              borderColor: 'rgba(0, 242, 254, 0.3)',
-                              fontWeight: 'bold'
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              outline: 'none',
+                              height: '48px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center'
                             }}
                           >
-                            🛒 {isRtl ? '+ متجر' : '+ Store'}
+                            📢
                           </button>
-                        )}
-                      </div>
+                          {showSignalMenu && (
+                            <div style={{
+                              position: 'absolute',
+                              bottom: '56px',
+                              left: isRtl ? 0 : 'auto',
+                              right: isRtl ? 'auto' : 0,
+                              backgroundColor: '#111528',
+                              border: '1px solid rgba(255,255,255,0.1)',
+                              borderRadius: '6px',
+                              padding: '4px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '4px',
+                              zIndex: 1000,
+                              width: '120px',
+                              boxShadow: '0 0 10px rgba(0,0,0,0.5)'
+                            }}>
+                              {[
+                                { text: isRtl ? "ساعدني هنا!" : "Need help!", icon: "🆘" },
+                                { text: isRtl ? "جمّده!" : "Freeze them!", icon: "❄️" },
+                                { text: isRtl ? "ركّز!" : "Focus!", icon: "🎯" },
+                                { text: isRtl ? "أعرف الإجابة!" : "I know this!", icon: "🧠" }
+                              ].map((sig, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => {
+                                    const activeParts = gameSyncRef.current?.activeParticipants || [];
+                                    const selfPart = activeParts.find(p => p.userId === user?.id);
+                                    const myTeamId = selfPart?.teamId || null;
+                                    gameSyncRef.current?.sendChatMessage(sig.text, myTeamId);
+                                    setShowSignalMenu(false);
+                                    playSFX('click');
+                                  }}
+                                  style={{
+                                    backgroundColor: 'transparent',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    padding: '4px 6px',
+                                    fontSize: '0.65rem',
+                                    textAlign: isRtl ? 'right' : 'left',
+                                    cursor: 'pointer',
+                                    borderRadius: '4px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    direction: isRtl ? 'rtl' : 'ltr',
+                                    width: '100%'
+                                  }}
+                                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)')}
+                                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                                >
+                                  <span>{sig.icon}</span>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.text}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {buzzerActive && !isBuzzed && !answerSubmitted && (
+                        <button style={{ ...styles.buzzerCircBtn, height: '48px', borderRadius: '8px', flex: 1, margin: 0 }} onClick={() => handleBuzz(0)}>
+                          {t.buzzBtn}
+                        </button>
+                      )}
+
+                      {/* Answering State */}
+                      {(!buzzerActive || (isBuzzed && buzzedUser === user?.username)) && !answerSubmitted && (
+                        <button style={{ ...styles.submitAnsBtn, height: '48px', flex: 1, margin: 0 }} onClick={handleSubmitAnswer}>
+                          {t.submitBtn}
+                        </button>
+                      )}
+
+                      {/* Waiting state for buzzer matches */}
+                      {isBuzzed && buzzedUser !== user?.username && !answerSubmitted && (
+                        <div style={{ ...styles.waitingForPlayerMessage, flex: 1, margin: 0, padding: '10px' }}>
+                          {bt === 'TEAM_CONSULTATION' && isMyTeamBuzzed ? (
+                            <div style={{ color: '#00f2fe', display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', textAlign: 'center', fontSize: '0.75rem' }}>
+                              <span style={{ fontWeight: 'bold' }}>{isRtl ? 'تشاور الفريق: صوّت على الإجابة!' : 'TEAM CONSULTATION: Vote!'}</span>
+                            </div>
+                          ) : (
+                            isRtl ? 'بانتظار إجابة الخصم...' : 'Waiting for opponent...'
+                          )}
+                        </div>
+                      )}
+
+                      {answerSubmitted && !currentRoom && (
+                        <button style={{ ...styles.nextQBtn, height: '48px', flex: 1, margin: 0 }} onClick={nextQuestion}>
+                          {t.nextBtn}
+                        </button>
+                      )}
                     </div>
-
-                    {buzzerActive && !isBuzzed && !answerSubmitted && (
-                      <button style={styles.buzzerCircBtn} onClick={() => handleBuzz(0)}>
-                        {t.buzzBtn}
-                      </button>
-                    )}
-
-                    {/* Answering State */}
-                    {(!buzzerActive || (isBuzzed && buzzedUser === user?.username)) && !answerSubmitted && (
-                      <button style={styles.submitAnsBtn} onClick={handleSubmitAnswer}>
-                        {t.submitBtn}
-                      </button>
-                    )}
-
-                    {/* Waiting state for buzzer matches */}
-                    {isBuzzed && buzzedUser !== user?.username && !answerSubmitted && (
-                      <div style={styles.waitingForPlayerMessage}>
-                        {bt === 'TEAM_CONSULTATION' && isMyTeamBuzzed ? (
-                          <div style={{ color: '#00f2fe', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', textAlign: 'center' }}>
-                            <span style={{ fontWeight: 'bold' }}>👥 {isRtl ? 'تشاور الفريق: صوّت على الإجابة الصحيحة مع فريقك!' : 'TEAM CONSULTATION: Vote on the correct answer with your team!'}</span>
-                            <span style={{ fontSize: '0.8rem', color: 'rgba(255, 255, 255, 0.6)' }}>
-                              {isRtl ? '(صوتك يظهر فوراً لزملائك، وسيتم تقديم خيار الأغلبية)' : '(Your vote is shared instantly; majority choice will be submitted)'}
-                            </span>
-                          </div>
-                        ) : (
-                          isRtl ? 'بانتظار إجابة الخصم...' : 'Waiting for opponent to answer...'
-                        )}
-                      </div>
-                    )}
-
-                    {answerSubmitted && !currentRoom && (
-                      <button style={styles.nextQBtn} onClick={nextQuestion}>
-                        {t.nextBtn}
-                      </button>
-                    )}
                   </>
+                )}
+              </div>
                 )}
               </div>
             </div>
